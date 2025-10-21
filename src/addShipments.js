@@ -186,46 +186,24 @@ router.put("/confirm-delivery/:tracking_number", async (req, res) => {
       delivery_status,
     } = req.body;
 
-    // Validate required fields
-    if (!tracking_number) {
-      return res.status(400).json({ error: "Tracking number is required" });
+    // Simple validation
+    if (!tracking_number || !recipient_name || !signature_data) {
+      return res.status(400).json({ error: "Missing required fields" });
     }
 
-    if (!recipient_name || !recipient_name.trim()) {
-      return res.status(400).json({ error: "Recipient name is required" });
-    }
-
-    if (!signature_data) {
-      return res.status(400).json({ error: "Digital signature is required" });
-    }
-
-    // Validate signature data format (should be base64 data URL)
-    if (!signature_data.startsWith('data:image/')) {
-      return res.status(400).json({ error: "Invalid signature format" });
-    }
-
-    console.log(`Confirming delivery for tracking number: ${tracking_number}`);
-    console.log(`Recipient: ${recipient_name.trim()}`);
-    console.log(`Signature data length: ${signature_data?.length || 0} characters`);
-
-    // First check if shipment exists and is not already confirmed
-    const checkQuery =
-      "SELECT delivery_status, recipient_name FROM shipments WHERE tracking_number = $1";
+    // Check if shipment exists
+    const checkQuery = "SELECT delivery_status FROM shipments WHERE tracking_number = $1";
     const checkResult = await db.query(checkQuery, [tracking_number]);
 
     if (checkResult.rows.length === 0) {
-      console.log(`Shipment not found: ${tracking_number}`);
       return res.status(404).json({ error: "Shipment not found" });
     }
 
-    console.log('Found shipment:', checkResult.rows[0]);
-
     if (checkResult.rows[0].delivery_status === "delivered_confirmed") {
-      console.log(`Shipment already confirmed: ${tracking_number}`);
       return res.status(400).json({ error: "Shipment already confirmed" });
     }
 
-    // Update shipment with delivery confirmation
+    // Update shipment
     const updateQuery = `
       UPDATE shipments 
       SET delivery_status = $1, 
@@ -237,18 +215,10 @@ router.put("/confirm-delivery/:tracking_number", async (req, res) => {
       RETURNING *
     `;
 
-    console.log('Update query parameters:', {
-      delivery_status,
-      signature_data: signature_data ? `${signature_data.substring(0, 50)}...` : null,
-      delivery_timestamp,
-      recipient_name: recipient_name.trim(),
-      tracking_number
-    });
-
     const result = await db.query(updateQuery, [
-      delivery_status,
+      delivery_status || "delivered_confirmed",
       signature_data,
-      delivery_timestamp,
+      delivery_timestamp || new Date().toISOString(),
       recipient_name.trim(),
       tracking_number,
     ]);
@@ -264,31 +234,7 @@ router.put("/confirm-delivery/:tracking_number", async (req, res) => {
     });
   } catch (error) {
     console.error("Error confirming delivery:", error);
-    console.error("Error details:", {
-      name: error.name,
-      message: error.message,
-      code: error.code,
-      detail: error.detail,
-      hint: error.hint,
-      position: error.position,
-      stack: error.stack
-    });
-    
-    // Send more specific error messages
-    if (error.code === '23505') {
-      return res.status(400).json({ error: "Duplicate entry - delivery already confirmed" });
-    } else if (error.code === '23502') {
-      return res.status(400).json({ error: "Missing required field" });
-    } else if (error.code === '22001') {
-      return res.status(400).json({ error: "Data too long for database field" });
-    } else if (error.code === '22008') {
-      return res.status(400).json({ error: "Invalid timestamp format" });
-    } else {
-      res.status(500).json({ 
-        error: `Database error: ${error.message}`,
-        code: error.code || 'UNKNOWN'
-      });
-    }
+    res.status(500).json({ error: "Internal server error" });
   }
 });
 
