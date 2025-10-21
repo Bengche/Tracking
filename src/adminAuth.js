@@ -142,6 +142,60 @@ router.post("/login", async (req, res) => {
   }
 });
 
+// GET /auth/debug - Debug database connection (REMOVE IN PRODUCTION)
+router.get("/debug", async (req, res) => {
+  try {
+    // Test database connection
+    const connectionTest = await pool.query("SELECT NOW()");
+    console.log("✅ Database connection successful");
+
+    // Check if admins table exists
+    const tableCheck = await pool.query(`
+      SELECT table_name 
+      FROM information_schema.tables 
+      WHERE table_schema = 'public' AND table_name = 'admins'
+    `);
+
+    if (tableCheck.rows.length === 0) {
+      return res.json({
+        success: false,
+        message: "❌ ISSUE FOUND: 'admins' table does not exist",
+        solution: "Run the setupAdmin.js script to create the table and admin user"
+      });
+    }
+
+    // Check table structure
+    const structureCheck = await pool.query(`
+      SELECT column_name, data_type, is_nullable
+      FROM information_schema.columns 
+      WHERE table_name = 'admins'
+    `);
+
+    // Check if admin user exists
+    const adminCheck = await pool.query("SELECT email, is_admin FROM admins WHERE email = $1", ["support@velizon.com"]);
+
+    res.json({
+      success: true,
+      database: {
+        connection: "✅ Connected",
+        timestamp: connectionTest.rows[0].now,
+        table_exists: "✅ admins table exists",
+        columns: structureCheck.rows,
+        admin_user: adminCheck.rows.length > 0 ? "✅ Admin user exists" : "❌ Admin user missing",
+        admin_data: adminCheck.rows[0] || null
+      }
+    });
+
+  } catch (error) {
+    console.error("❌ Database debug error:", error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      hint: "Check DATABASE_URL environment variable"
+    });
+  }
+});
+
 // POST /auth/logout - Admin logout
 router.post("/logout", authenticateToken, (req, res) => {
   try {
