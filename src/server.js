@@ -1,8 +1,10 @@
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
+import cookieParser from "cookie-parser";
 import shipmentRoutes from "./addShipments.js";
 import trackShipment from "./trackShipment.js";
+import adminAuthRoutes from "./adminAuth.js";
 
 // Load environment variables
 dotenv.config();
@@ -31,6 +33,7 @@ const corsOptions = {
 app.use(cors(corsOptions));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+app.use(cookieParser()); // Parse cookies for JWT sessions
 
 const PORT = process.env.PORT || 4000;
 
@@ -46,6 +49,7 @@ app.get("/", (req, res) => {
 // API routes
 app.use("/shipment", shipmentRoutes);
 app.use("/track", trackShipment);
+app.use("/auth", adminAuthRoutes); // Admin authentication routes
 
 app.listen(PORT, () => {
   console.log(`Server is running on Port ${PORT}`);
