@@ -32,7 +32,7 @@ router.post("/add_shipment", async (req, res) => {
     custom_status,
     remarks,
   } = req.body;
-  
+
   // Generate QR Code with tracking URL - Use environment variable or fallback
   const frontendDomain = process.env.FRONTEND_URL || "https://velizon.com";
   const trackingUrl = `${frontendDomain}?tracking=${tracking_number}`;
@@ -185,6 +185,28 @@ router.put("/confirm-delivery/:tracking_number", async (req, res) => {
       delivery_timestamp,
       delivery_status,
     } = req.body;
+
+    // Validate required fields
+    if (!tracking_number) {
+      return res.status(400).json({ error: "Tracking number is required" });
+    }
+
+    if (!recipient_name || !recipient_name.trim()) {
+      return res.status(400).json({ error: "Recipient name is required" });
+    }
+
+    if (!signature_data) {
+      return res.status(400).json({ error: "Digital signature is required" });
+    }
+
+    // Validate signature data format (should be base64 data URL)
+    if (!signature_data.startsWith('data:image/')) {
+      return res.status(400).json({ error: "Invalid signature format" });
+    }
+
+    console.log(`Confirming delivery for tracking number: ${tracking_number}`);
+    console.log(`Recipient: ${recipient_name.trim()}`);
+    console.log(`Signature data length: ${signature_data?.length || 0} characters`);
 
     // First check if shipment exists and is not already confirmed
     const checkQuery =
