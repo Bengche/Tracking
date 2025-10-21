@@ -160,7 +160,8 @@ router.get("/debug", async (req, res) => {
       return res.json({
         success: false,
         message: "❌ ISSUE FOUND: 'admins' table does not exist",
-        solution: "Run the setupAdmin.js script to create the table and admin user"
+        solution:
+          "Run the setupAdmin.js script to create the table and admin user",
       });
     }
 
@@ -172,7 +173,10 @@ router.get("/debug", async (req, res) => {
     `);
 
     // Check if admin user exists
-    const adminCheck = await pool.query("SELECT email, is_admin FROM admins WHERE email = $1", ["support@velizon.com"]);
+    const adminCheck = await pool.query(
+      "SELECT email, is_admin FROM admins WHERE email = $1",
+      ["support@velizon.com"]
+    );
 
     res.json({
       success: true,
@@ -181,17 +185,19 @@ router.get("/debug", async (req, res) => {
         timestamp: connectionTest.rows[0].now,
         table_exists: "✅ admins table exists",
         columns: structureCheck.rows,
-        admin_user: adminCheck.rows.length > 0 ? "✅ Admin user exists" : "❌ Admin user missing",
-        admin_data: adminCheck.rows[0] || null
-      }
+        admin_user:
+          adminCheck.rows.length > 0
+            ? "✅ Admin user exists"
+            : "❌ Admin user missing",
+        admin_data: adminCheck.rows[0] || null,
+      },
     });
-
   } catch (error) {
     console.error("❌ Database debug error:", error);
     res.status(500).json({
       success: false,
       error: error.message,
-      hint: "Check DATABASE_URL environment variable"
+      hint: "Check DATABASE_URL environment variable",
     });
   }
 });

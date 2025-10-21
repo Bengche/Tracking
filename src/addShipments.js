@@ -32,8 +32,10 @@ router.post("/add_shipment", async (req, res) => {
     custom_status,
     remarks,
   } = req.body;
-  // Generate QR Code with tracking URL
-  const trackingUrl = `http://localhost:5173?tracking=${tracking_number}`;
+  
+  // Generate QR Code with tracking URL - Use environment variable or fallback
+  const frontendDomain = process.env.FRONTEND_URL || "https://velizon.com";
+  const trackingUrl = `${frontendDomain}?tracking=${tracking_number}`;
   const qrCodeDataURL = await QRCode.toDataURL(trackingUrl);
 
   db.query(

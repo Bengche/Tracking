@@ -54,7 +54,7 @@ app.get("/test", (req, res) => {
     timestamp: new Date().toISOString(),
     database_url_exists: !!process.env.DATABASE_URL,
     jwt_secret_exists: !!process.env.JWT_SECRET,
-    port: process.env.PORT || 4000
+    port: process.env.PORT || 4000,
   });
 });
 
