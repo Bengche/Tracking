@@ -46,6 +46,18 @@ app.get("/", (req, res) => {
   });
 });
 
+// Simple test route without database
+app.get("/test", (req, res) => {
+  res.json({
+    status: "✅ Server is working",
+    environment: process.env.NODE_ENV || "development",
+    timestamp: new Date().toISOString(),
+    database_url_exists: !!process.env.DATABASE_URL,
+    jwt_secret_exists: !!process.env.JWT_SECRET,
+    port: process.env.PORT || 4000
+  });
+});
+
 // API routes
 app.use("/shipment", shipmentRoutes);
 app.use("/track", trackShipment);
