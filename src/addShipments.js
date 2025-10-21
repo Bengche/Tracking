@@ -210,14 +210,18 @@ router.put("/confirm-delivery/:tracking_number", async (req, res) => {
 
     // First check if shipment exists and is not already confirmed
     const checkQuery =
-      "SELECT delivery_status FROM shipments WHERE tracking_number = $1";
+      "SELECT delivery_status, recipient_name FROM shipments WHERE tracking_number = $1";
     const checkResult = await db.query(checkQuery, [tracking_number]);
 
     if (checkResult.rows.length === 0) {
+      console.log(`Shipment not found: ${tracking_number}`);
       return res.status(404).json({ error: "Shipment not found" });
     }
 
+    console.log('Found shipment:', checkResult.rows[0]);
+
     if (checkResult.rows[0].delivery_status === "delivered_confirmed") {
+      console.log(`Shipment already confirmed: ${tracking_number}`);
       return res.status(400).json({ error: "Shipment already confirmed" });
     }
 
@@ -233,11 +237,19 @@ router.put("/confirm-delivery/:tracking_number", async (req, res) => {
       RETURNING *
     `;
 
+    console.log('Update query parameters:', {
+      delivery_status,
+      signature_data: signature_data ? `${signature_data.substring(0, 50)}...` : null,
+      delivery_timestamp,
+      recipient_name: recipient_name.trim(),
+      tracking_number
+    });
+
     const result = await db.query(updateQuery, [
       delivery_status,
       signature_data,
       delivery_timestamp,
-      recipient_name,
+      recipient_name.trim(),
       tracking_number,
     ]);
 
@@ -252,7 +264,31 @@ router.put("/confirm-delivery/:tracking_number", async (req, res) => {
     });
   } catch (error) {
     console.error("Error confirming delivery:", error);
-    res.status(500).json({ error: error.message });
+    console.error("Error details:", {
+      name: error.name,
+      message: error.message,
+      code: error.code,
+      detail: error.detail,
+      hint: error.hint,
+      position: error.position,
+      stack: error.stack
+    });
+    
+    // Send more specific error messages
+    if (error.code === '23505') {
+      return res.status(400).json({ error: "Duplicate entry - delivery already confirmed" });
+    } else if (error.code === '23502') {
+      return res.status(400).json({ error: "Missing required field" });
+    } else if (error.code === '22001') {
+      return res.status(400).json({ error: "Data too long for database field" });
+    } else if (error.code === '22008') {
+      return res.status(400).json({ error: "Invalid timestamp format" });
+    } else {
+      res.status(500).json({ 
+        error: `Database error: ${error.message}`,
+        code: error.code || 'UNKNOWN'
+      });
+    }
   }
 });
 
