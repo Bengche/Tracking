@@ -36,10 +36,10 @@ const PORT = process.env.PORT || 4000;
 
 // Health check route
 app.get("/", (req, res) => {
-  res.json({ 
-    message: "Tracking API is running", 
+  res.json({
+    message: "Tracking API is running",
     status: "healthy",
-    timestamp: new Date().toISOString()
+    timestamp: new Date().toISOString(),
   });
 });
 
