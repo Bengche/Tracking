@@ -204,20 +204,26 @@ router.put("/confirm-delivery/:tracking_number", async (req, res) => {
     } = req.body;
 
     console.log(`Attempting delivery confirmation for: ${tracking_number}`);
-    console.log('Request body:', JSON.stringify(req.body, null, 2));
-    console.log('recipient_name:', recipient_name);
-    console.log('signature_data:', signature_data ? 'Present' : 'Missing');
-    console.log('delivery_timestamp:', delivery_timestamp);
+    console.log("Request body:", JSON.stringify(req.body, null, 2));
+    console.log("recipient_name:", recipient_name);
+    console.log("signature_data:", signature_data ? "Present" : "Missing");
+    console.log("delivery_timestamp:", delivery_timestamp);
 
     // Simple validation - tracking_number comes from URL params, not body
+    console.log("About to validate:");
+    console.log("!recipient_name:", !recipient_name);
+    console.log("!signature_data:", !signature_data);
+    
     if (!recipient_name || !signature_data) {
-      console.log('Validation failed:', {
+      console.log("Validation failed:", {
         tracking_number: !!tracking_number,
         recipient_name: !!recipient_name,
-        signature_data: !!signature_data
+        signature_data: !!signature_data,
       });
       return res.status(400).json({ error: "Missing required fields" });
     }
+    
+    console.log("Validation passed! Proceeding with database operations...");
 
     // Check if shipment exists
     const checkQuery =
