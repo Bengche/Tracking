@@ -8,15 +8,15 @@ const router = express.Router();
 router.get("/test-db", async (req, res) => {
   try {
     const result = await db.query("SELECT NOW() as current_time");
-    res.json({ 
-      success: true, 
-      message: "Database connection working", 
-      time: result.rows[0].current_time 
+    res.json({
+      success: true,
+      message: "Database connection working",
+      time: result.rows[0].current_time,
     });
   } catch (error) {
-    res.status(500).json({ 
-      error: "Database connection failed", 
-      details: error.message 
+    res.status(500).json({
+      error: "Database connection failed",
+      details: error.message,
     });
   }
 });
@@ -211,7 +211,8 @@ router.put("/confirm-delivery/:tracking_number", async (req, res) => {
     }
 
     // Check if shipment exists
-    const checkQuery = "SELECT shipment_status FROM shipments WHERE tracking_number = $1";
+    const checkQuery =
+      "SELECT shipment_status FROM shipments WHERE tracking_number = $1";
     const checkResult = await db.query(checkQuery, [tracking_number]);
 
     if (checkResult.rows.length === 0) {
@@ -249,9 +250,9 @@ router.put("/confirm-delivery/:tracking_number", async (req, res) => {
   } catch (error) {
     console.error("Error confirming delivery:", error.message);
     console.error("Error stack:", error.stack);
-    res.status(500).json({ 
+    res.status(500).json({
       error: "Internal server error",
-      details: error.message 
+      details: error.message,
     });
   }
 });
