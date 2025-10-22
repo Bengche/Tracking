@@ -209,8 +209,8 @@ router.put("/confirm-delivery/:tracking_number", async (req, res) => {
     console.log('signature_data:', signature_data ? 'Present' : 'Missing');
     console.log('delivery_timestamp:', delivery_timestamp);
 
-    // Simple validation
-    if (!tracking_number || !recipient_name || !signature_data) {
+    // Simple validation - tracking_number comes from URL params, not body
+    if (!recipient_name || !signature_data) {
       console.log('Validation failed:', {
         tracking_number: !!tracking_number,
         recipient_name: !!recipient_name,
