@@ -213,7 +213,7 @@ router.put("/confirm-delivery/:tracking_number", async (req, res) => {
     console.log("About to validate:");
     console.log("!recipient_name:", !recipient_name);
     console.log("!signature_data:", !signature_data);
-    
+
     if (!recipient_name || !signature_data) {
       console.log("Validation failed:", {
         tracking_number: !!tracking_number,
@@ -222,7 +222,7 @@ router.put("/confirm-delivery/:tracking_number", async (req, res) => {
       });
       return res.status(400).json({ error: "Missing required fields" });
     }
-    
+
     console.log("Validation passed! Proceeding with database operations...");
 
     // Check if shipment exists
@@ -235,8 +235,11 @@ router.put("/confirm-delivery/:tracking_number", async (req, res) => {
       return res.status(404).json({ error: "Shipment not found" });
     }
 
-    console.log("Current shipment status:", checkResult.rows[0].shipment_status);
-    
+    console.log(
+      "Current shipment status:",
+      checkResult.rows[0].shipment_status
+    );
+
     if (checkResult.rows[0].shipment_status === "Delivered - Confirmed") {
       console.log("Shipment already confirmed - returning 400");
       return res.status(400).json({ error: "Shipment already confirmed" });
