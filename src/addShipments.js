@@ -231,10 +231,14 @@ router.put("/confirm-delivery/:tracking_number", async (req, res) => {
     const checkResult = await db.query(checkQuery, [tracking_number]);
 
     if (checkResult.rows.length === 0) {
+      console.log("Shipment not found in database");
       return res.status(404).json({ error: "Shipment not found" });
     }
 
+    console.log("Current shipment status:", checkResult.rows[0].shipment_status);
+    
     if (checkResult.rows[0].shipment_status === "Delivered - Confirmed") {
+      console.log("Shipment already confirmed - returning 400");
       return res.status(400).json({ error: "Shipment already confirmed" });
     }
 
