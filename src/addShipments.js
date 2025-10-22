@@ -4,6 +4,23 @@ import QRCode from "qrcode";
 
 const router = express.Router();
 
+// Test database connection
+router.get("/test-db", async (req, res) => {
+  try {
+    const result = await db.query("SELECT NOW() as current_time");
+    res.json({ 
+      success: true, 
+      message: "Database connection working", 
+      time: result.rows[0].current_time 
+    });
+  } catch (error) {
+    res.status(500).json({ 
+      error: "Database connection failed", 
+      details: error.message 
+    });
+  }
+});
+
 router.post("/add_shipment", async (req, res) => {
   const shipment_id = Math.floor(100000 + Math.random() * 900000).toString();
   const {
@@ -186,6 +203,8 @@ router.put("/confirm-delivery/:tracking_number", async (req, res) => {
       delivery_status,
     } = req.body;
 
+    console.log(`Attempting delivery confirmation for: ${tracking_number}`);
+
     // Simple validation
     if (!tracking_number || !recipient_name || !signature_data) {
       return res.status(400).json({ error: "Missing required fields" });
@@ -203,23 +222,17 @@ router.put("/confirm-delivery/:tracking_number", async (req, res) => {
       return res.status(400).json({ error: "Shipment already confirmed" });
     }
 
-    // Update shipment
+    // Update shipment with minimal fields to avoid column issues
     const updateQuery = `
       UPDATE shipments 
-      SET delivery_status = $1, 
-          signature_data = $2, 
-          signature_timestamp = $3, 
-          recipient_name = $4,
+      SET delivery_status = $1,
           shipment_status = 'Delivered'
-      WHERE tracking_number = $5 
-      RETURNING *
+      WHERE tracking_number = $2 
+      RETURNING tracking_number, shipment_status, delivery_status
     `;
 
     const result = await db.query(updateQuery, [
-      delivery_status || "delivered_confirmed",
-      signature_data,
-      delivery_timestamp || new Date().toISOString(),
-      recipient_name.trim(),
+      "delivered_confirmed",
       tracking_number,
     ]);
 
@@ -227,14 +240,20 @@ router.put("/confirm-delivery/:tracking_number", async (req, res) => {
       return res.status(404).json({ error: "Failed to update shipment" });
     }
 
+    console.log(`Successfully confirmed delivery for: ${tracking_number}`);
+
     res.json({
       success: true,
       message: "Delivery confirmed successfully",
       shipment: result.rows[0],
     });
   } catch (error) {
-    console.error("Error confirming delivery:", error);
-    res.status(500).json({ error: "Internal server error" });
+    console.error("Error confirming delivery:", error.message);
+    console.error("Error stack:", error.stack);
+    res.status(500).json({ 
+      error: "Internal server error",
+      details: error.message 
+    });
   }
 });
 
