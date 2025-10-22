@@ -211,28 +211,27 @@ router.put("/confirm-delivery/:tracking_number", async (req, res) => {
     }
 
     // Check if shipment exists
-    const checkQuery = "SELECT delivery_status FROM shipments WHERE tracking_number = $1";
+    const checkQuery = "SELECT shipment_status FROM shipments WHERE tracking_number = $1";
     const checkResult = await db.query(checkQuery, [tracking_number]);
 
     if (checkResult.rows.length === 0) {
       return res.status(404).json({ error: "Shipment not found" });
     }
 
-    if (checkResult.rows[0].delivery_status === "delivered_confirmed") {
+    if (checkResult.rows[0].shipment_status === "Delivered - Confirmed") {
       return res.status(400).json({ error: "Shipment already confirmed" });
     }
 
-    // Update shipment with minimal fields to avoid column issues
+    // Update shipment with correct column name
     const updateQuery = `
       UPDATE shipments 
-      SET delivery_status = $1,
-          shipment_status = 'Delivered'
+      SET shipment_status = $1
       WHERE tracking_number = $2 
-      RETURNING tracking_number, shipment_status, delivery_status
+      RETURNING tracking_number, shipment_status
     `;
 
     const result = await db.query(updateQuery, [
-      "delivered_confirmed",
+      "Delivered - Confirmed",
       tracking_number,
     ]);
 
