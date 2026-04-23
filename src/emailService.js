@@ -612,7 +612,7 @@ export async function notifyShipmentCreated(shipment) {
           type: "image/png",
           filename: "tracking-qr.png",
           disposition: "inline",
-          contentId: "velizon-qrcode",
+          content_id: "velizon-qrcode",
         },
       ];
     }
@@ -631,9 +631,13 @@ export async function notifyShipmentCreated(shipment) {
   const results = await Promise.allSettled(messages.map((m) => sgMail.send(m)));
   results.forEach((r, i) => {
     if (r.status === "rejected") {
+      const sgErrors = r.reason?.response?.body?.errors;
+      const detail = sgErrors
+        ? JSON.stringify(sgErrors)
+        : r.reason?.message;
       console.error(
         `[email] Failed sending to ${messages[i].to}:`,
-        r.reason?.message,
+        detail,
       );
     }
   });
@@ -680,10 +684,9 @@ export async function notifyStatusUpdate(shipment, previousStatus) {
   const results = await Promise.allSettled(messages.map((m) => sgMail.send(m)));
   results.forEach((r, i) => {
     if (r.status === "rejected") {
-      console.error(
-        `[email] Failed sending to ${messages[i].to}:`,
-        r.reason?.message,
-      );
+      const sgErrors = r.reason?.response?.body?.errors;
+      const detail = sgErrors ? JSON.stringify(sgErrors) : r.reason?.message;
+      console.error(`[email] Failed sending to ${messages[i].to}:`, detail);
     }
   });
 }
@@ -756,10 +759,9 @@ export async function notifyDeliveryConfirmed(shipment, recipientName) {
   const results = await Promise.allSettled(messages.map((m) => sgMail.send(m)));
   results.forEach((r, i) => {
     if (r.status === "rejected") {
-      console.error(
-        `[email] Failed sending to ${messages[i].to}:`,
-        r.reason?.message,
-      );
+      const sgErrors = r.reason?.response?.body?.errors;
+      const detail = sgErrors ? JSON.stringify(sgErrors) : r.reason?.message;
+      console.error(`[email] Failed sending to ${messages[i].to}:`, detail);
     }
   });
 }
