@@ -254,6 +254,8 @@ function buildReceiverCreatedEmail(s, trackingUrl) {
     ["Shipment Type", s.shipment_type],
   ]);
 
+  // Use CID reference — the actual image is sent as an inline attachment.
+  // Data URLs are blocked by virtually all email clients (Gmail, Outlook, Apple Mail).
   const qrSection = s.qr_code
     ? `
 <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="margin:28px 0;">
@@ -262,7 +264,7 @@ function buildReceiverCreatedEmail(s, trackingUrl) {
       <p style="margin:0 0 16px;font-size:12px;color:#64748B;text-transform:uppercase;letter-spacing:0.8px;font-weight:700;font-family:Arial,Helvetica,sans-serif;">
         Scan to track your shipment
       </p>
-      <img src="${s.qr_code}" alt="Tracking QR Code" width="160" height="160"
+      <img src="cid:velizon-qrcode" alt="Tracking QR Code" width="160" height="160"
         style="display:block;border:none;outline:none;border-radius:6px;" />
       <p style="margin:14px 0 0;font-size:13px;color:#94A3B8;font-family:Arial,Helvetica,sans-serif;">
         Or use tracking number <strong style="color:#64748B;">${s.tracking_number}</strong>
@@ -591,12 +593,30 @@ export async function notifyShipmentCreated(shipment) {
   }
 
   if (shipment.receiver_email) {
-    messages.push({
+    const receiverMsg = {
       to: shipment.receiver_email,
       from: { email: FROM_EMAIL, name: "Velizon Logistics" },
       subject: `A shipment is on its way to you — ${shipment.tracking_number}`,
       html: buildReceiverCreatedEmail(shipment, trackingUrl),
-    });
+    };
+    // Attach QR code as a CID inline image so email clients can render it.
+    // The HTML references it as src="cid:velizon-qrcode".
+    if (shipment.qr_code) {
+      const base64Content = shipment.qr_code.replace(
+        /^data:image\/\w+;base64,/,
+        "",
+      );
+      receiverMsg.attachments = [
+        {
+          content: base64Content,
+          type: "image/png",
+          filename: "tracking-qr.png",
+          disposition: "inline",
+          contentId: "velizon-qrcode",
+        },
+      ];
+    }
+    messages.push(receiverMsg);
   }
 
   if (adminEmail) {
