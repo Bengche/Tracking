@@ -1,6 +1,11 @@
 import express from "express";
 import db from "./db.js";
 import QRCode from "qrcode";
+import {
+  notifyShipmentCreated,
+  notifyStatusUpdate,
+  notifyDeliveryConfirmed,
+} from "./emailService.js";
 
 const router = express.Router();
 
@@ -55,9 +60,42 @@ router.post("/add_shipment", async (req, res) => {
   const trackingUrl = `${frontendDomain}/track?tracking=${tracking_number}`;
   const qrCodeDataURL = await QRCode.toDataURL(trackingUrl);
 
-  db.query(
-    "INSERT INTO shipments (tracking_number,shipment_id,sender_name,sender_address,sender_email,sender_phone,receiver_name,receiver_address,receiver_phone,receiver_email,receiver_country,origin_country,origin_location,destination_country,destination_location,current_location,shipment_status,shipment_type,weight,expected_delivery,dimensions,contents,custom_status,remarks,qr_code) VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25)",
-    [
+  try {
+    await db.query(
+      "INSERT INTO shipments (tracking_number,shipment_id,sender_name,sender_address,sender_email,sender_phone,receiver_name,receiver_address,receiver_phone,receiver_email,receiver_country,origin_country,origin_location,destination_country,destination_location,current_location,shipment_status,shipment_type,weight,expected_delivery,dimensions,contents,custom_status,remarks,qr_code) VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25)",
+      [
+        tracking_number,
+        shipment_id,
+        sender_name,
+        sender_address,
+        sender_email,
+        sender_phone,
+        receiver_name,
+        receiver_address,
+        receiver_phone,
+        receiver_email,
+        receiver_country,
+        origin_country,
+        origin_location,
+        destination_country,
+        destination_location,
+        current_location,
+        shipment_status,
+        shipment_type,
+        weight,
+        expected_delivery,
+        dimensions,
+        contents,
+        custom_status,
+        remarks,
+        qrCodeDataURL,
+      ],
+    );
+
+    res.status(201).json({ message: "Shipment added successfully" });
+
+    // Fire emails non-blocking after responding to the client
+    notifyShipmentCreated({
       tracking_number,
       shipment_id,
       sender_name,
@@ -80,27 +118,22 @@ router.post("/add_shipment", async (req, res) => {
       expected_delivery,
       dimensions,
       contents,
-      custom_status,
       remarks,
-      qrCodeDataURL,
-    ],
-    (err, result) => {
-      if (err) {
-        res.status(500).json({ error: err.message });
-        console.log(err.message);
-        return;
-      } else {
-        res.status(201).json({ message: "Shipment added successfully" });
-      }
-    }
-  );
+      qr_code: qrCodeDataURL,
+    }).catch((err) =>
+      console.error("[email] notifyShipmentCreated failed:", err.message),
+    );
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+    console.error(err.message);
+  }
 });
 
 // Get all shipments
 router.get("/all", async (req, res) => {
   try {
     const result = await db.query(
-      "SELECT * FROM shipments ORDER BY shipment_id DESC"
+      "SELECT * FROM shipments ORDER BY shipment_id DESC",
     );
 
     res.json({
@@ -142,6 +175,13 @@ router.put("/update/:id", async (req, res) => {
   } = req.body;
 
   try {
+    // Capture previous status before updating so we can show the change in the email
+    const prevResult = await db.query(
+      "SELECT shipment_status, current_location FROM shipments WHERE shipment_id=$1",
+      [id],
+    );
+    const previousStatus = prevResult.rows[0]?.shipment_status ?? null;
+
     const result = await db.query(
       `UPDATE shipments SET 
         tracking_number=$1, sender_name=$2, sender_address=$3, sender_email=$4, sender_phone=$5,
@@ -175,7 +215,7 @@ router.put("/update/:id", async (req, res) => {
         custom_status,
         remarks,
         id,
-      ]
+      ],
     );
 
     if (result.rows.length === 0) {
@@ -187,6 +227,16 @@ router.put("/update/:id", async (req, res) => {
       shipment: result.rows[0],
       message: "Shipment updated successfully",
     });
+
+    // Fire status-update emails non-blocking after responding to the client
+    const statusChanged = previousStatus !== shipment_status;
+    const locationChanged =
+      prevResult.rows[0]?.current_location !== current_location;
+    if (statusChanged || locationChanged) {
+      notifyStatusUpdate(result.rows[0], previousStatus).catch((err) =>
+        console.error("[email] notifyStatusUpdate failed:", err.message),
+      );
+    }
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -237,7 +287,7 @@ router.put("/confirm-delivery/:tracking_number", async (req, res) => {
 
     console.log(
       "Current shipment status:",
-      checkResult.rows[0].shipment_status
+      checkResult.rows[0].shipment_status,
     );
 
     if (checkResult.rows[0].shipment_status === "Delivered - Confirmed") {
@@ -250,7 +300,7 @@ router.put("/confirm-delivery/:tracking_number", async (req, res) => {
       UPDATE shipments 
       SET shipment_status = $1
       WHERE tracking_number = $2 
-      RETURNING tracking_number, shipment_status
+      RETURNING *
     `;
 
     const result = await db.query(updateQuery, [
@@ -269,6 +319,11 @@ router.put("/confirm-delivery/:tracking_number", async (req, res) => {
       message: "Delivery confirmed successfully",
       shipment: result.rows[0],
     });
+
+    // Fire delivery-confirmed emails non-blocking after responding to the client
+    notifyDeliveryConfirmed(result.rows[0], recipient_name).catch((err) =>
+      console.error("[email] notifyDeliveryConfirmed failed:", err.message),
+    );
   } catch (error) {
     console.error("Error confirming delivery:", error.message);
     console.error("Error stack:", error.stack);

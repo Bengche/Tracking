@@ -5,6 +5,7 @@ import cookieParser from "cookie-parser";
 import shipmentRoutes from "./addShipments.js";
 import trackShipment from "./trackShipment.js";
 import adminAuthRoutes from "./adminAuth.js";
+import contactRoute from "./contact.js";
 
 // Load environment variables
 dotenv.config();
@@ -62,6 +63,7 @@ app.get("/test", (req, res) => {
 app.use("/shipment", shipmentRoutes);
 app.use("/track", trackShipment);
 app.use("/auth", adminAuthRoutes); // Admin authentication routes
+app.use("/contact", contactRoute);
 
 app.listen(PORT, () => {
   console.log(`Server is running on Port ${PORT}`);
