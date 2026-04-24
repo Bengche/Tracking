@@ -411,17 +411,32 @@ function buildStatusUpdateEmail(s, previousStatus, role, trackingUrl) {
   ];
 
   // Prominent expected-delivery banner shown above the CTA
-  const deliveryBanner = expectedDate
-    ? `
+  let deliveryBanner = "";
+  if (expectedDate && s.expected_delivery) {
+    const d = new Date(s.expected_delivery);
+    const calDay = d.getUTCDate();
+    const calMonth = d.toLocaleDateString("en-US", { month: "short", timeZone: "UTC" }).toUpperCase();
+
+    deliveryBanner = `
 <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="margin:24px 0;">
   <tr>
     <td style="background-color:#FFF7ED;border:1px solid #FED7AA;border-radius:10px;padding:20px 24px;">
       <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0">
         <tr>
-          <td style="vertical-align:middle;width:44px;">
-            <div style="width:40px;height:40px;background-color:#F59E0B;border-radius:50%;display:inline-block;text-align:center;line-height:40px;">
-              <span style="font-size:20px;color:#0A1628;">&#128197;</span>
-            </div>
+          <td style="vertical-align:middle;width:48px;">
+            <!--[if mso]><v:roundrect xmlns:v="urn:schemas-microsoft-com:vml" arcsize="10%" style="width:44px;height:48px;" fillcolor="#F59E0B" strokecolor="#D97706"><v:textbox inset="0,0,0,0"></v:textbox></v:roundrect><![endif]-->
+            <table role="presentation" cellspacing="0" cellpadding="0" border="0" style="width:44px;border-radius:8px;overflow:hidden;border:1.5px solid #D97706;">
+              <tr>
+                <td align="center" style="background-color:#F59E0B;padding:3px 0 2px;font-size:9px;font-weight:800;color:#7C2D12;letter-spacing:0.5px;font-family:Arial,Helvetica,sans-serif;">
+                  ${calMonth}
+                </td>
+              </tr>
+              <tr>
+                <td align="center" style="background-color:#FFFFFF;padding:2px 0 3px;font-size:20px;font-weight:800;color:#0A1628;line-height:1;font-family:Arial,Helvetica,sans-serif;">
+                  ${calDay}
+                </td>
+              </tr>
+            </table>
           </td>
           <td style="padding-left:14px;vertical-align:middle;">
             <p style="margin:0 0 2px;font-size:11px;font-weight:700;color:#92400E;text-transform:uppercase;letter-spacing:0.8px;font-family:Arial,Helvetica,sans-serif;">
@@ -435,8 +450,8 @@ function buildStatusUpdateEmail(s, previousStatus, role, trackingUrl) {
       </table>
     </td>
   </tr>
-</table>`
-    : "";
+</table>`;
+  }
 
   const qrSection =
     role === "receiver" && s.qr_code
