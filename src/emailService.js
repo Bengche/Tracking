@@ -379,6 +379,7 @@ function buildStatusUpdateEmail(s, previousStatus, role, trackingUrl) {
       ? `Your shipment to <strong>${s.receiver_name || "the recipient"}</strong> in <strong>${s.destination_country || s.destination_location || "the destination"}</strong> has a new update.`
       : `A shipment from <strong>${s.sender_name || "the sender"}</strong> addressed to you has a new update.`;
 
+  // Remove Expected Delivery from the table rows — it gets its own prominent banner below
   const tableRows = [
     [
       "Tracking Number",
@@ -406,9 +407,55 @@ function buildStatusUpdateEmail(s, previousStatus, role, trackingUrl) {
         ? `${s.destination_location}, ${s.destination_country || ""}`
         : s.destination_country,
     ],
-    ["Expected Delivery", expectedDate],
     ...(s.remarks ? [["Remarks", s.remarks]] : []),
   ];
+
+  // Prominent expected-delivery banner shown above the CTA
+  const deliveryBanner = expectedDate
+    ? `
+<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="margin:24px 0;">
+  <tr>
+    <td style="background-color:#FFF7ED;border:1px solid #FED7AA;border-radius:10px;padding:20px 24px;">
+      <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0">
+        <tr>
+          <td style="vertical-align:middle;width:44px;">
+            <div style="width:40px;height:40px;background-color:#F59E0B;border-radius:50%;display:inline-block;text-align:center;line-height:40px;">
+              <span style="font-size:20px;color:#0A1628;">&#128197;</span>
+            </div>
+          </td>
+          <td style="padding-left:14px;vertical-align:middle;">
+            <p style="margin:0 0 2px;font-size:11px;font-weight:700;color:#92400E;text-transform:uppercase;letter-spacing:0.8px;font-family:Arial,Helvetica,sans-serif;">
+              Estimated Delivery
+            </p>
+            <p style="margin:0;font-size:18px;font-weight:700;color:#0A1628;font-family:Arial,Helvetica,sans-serif;">
+              ${expectedDate}
+            </p>
+          </td>
+        </tr>
+      </table>
+    </td>
+  </tr>
+</table>`
+    : "";
+
+  const qrSection =
+    role === "receiver" && s.qr_code
+      ? `
+<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="margin:28px 0;">
+  <tr>
+    <td align="center" style="background-color:#F8FAFC;border:1px solid #E2E8F0;border-radius:10px;padding:28px 20px;">
+      <p style="margin:0 0 16px;font-size:12px;color:#64748B;text-transform:uppercase;letter-spacing:0.8px;font-weight:700;font-family:Arial,Helvetica,sans-serif;">
+        Scan to track your shipment
+      </p>
+      <img src="cid:velizon-qrcode" alt="Tracking QR Code" width="160" height="160"
+        style="display:block;border:none;outline:none;border-radius:6px;" />
+      <p style="margin:14px 0 0;font-size:13px;color:#94A3B8;font-family:Arial,Helvetica,sans-serif;">
+        Or use tracking number <strong style="color:#64748B;">${s.tracking_number}</strong>
+      </p>
+    </td>
+  </tr>
+</table>`
+      : "";
 
   const body = `
 <p style="margin:0 0 6px;font-size:16px;color:#0F172A;font-family:Arial,Helvetica,sans-serif;">
@@ -418,6 +465,8 @@ function buildStatusUpdateEmail(s, previousStatus, role, trackingUrl) {
   ${contextLine}
 </p>
 ${detailsTable(tableRows)}
+${deliveryBanner}
+${qrSection}
 ${ctaButton("Track Shipment", trackingUrl)}
 ${divider()}
 <p style="margin:0;font-size:13px;color:#94A3B8;line-height:1.6;font-family:Arial,Helvetica,sans-serif;">
@@ -492,6 +541,25 @@ function buildDeliveryConfirmedEmail(
     ["Recipient", role !== "receiver" ? s.receiver_name : null],
   ]);
 
+  const qrSection =
+    role === "receiver" && s.qr_code
+      ? `
+<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="margin:28px 0;">
+  <tr>
+    <td align="center" style="background-color:#F8FAFC;border:1px solid #E2E8F0;border-radius:10px;padding:28px 20px;">
+      <p style="margin:0 0 16px;font-size:12px;color:#64748B;text-transform:uppercase;letter-spacing:0.8px;font-weight:700;font-family:Arial,Helvetica,sans-serif;">
+        Your tracking QR code
+      </p>
+      <img src="cid:velizon-qrcode" alt="Tracking QR Code" width="160" height="160"
+        style="display:block;border:none;outline:none;border-radius:6px;" />
+      <p style="margin:14px 0 0;font-size:13px;color:#94A3B8;font-family:Arial,Helvetica,sans-serif;">
+        Tracking number <strong style="color:#64748B;">${s.tracking_number}</strong>
+      </p>
+    </td>
+  </tr>
+</table>`
+      : "";
+
   const body = `
 <p style="margin:0 0 6px;font-size:16px;color:#0F172A;font-family:Arial,Helvetica,sans-serif;">
   Hello <strong>${addresseeName || "there"}</strong>,
@@ -501,6 +569,7 @@ function buildDeliveryConfirmedEmail(
 </p>
 ${confirmedBanner}
 ${table}
+${qrSection}
 ${ctaButton("View Shipment", trackingUrl)}`;
 
   return emailWrapper(
@@ -632,13 +701,8 @@ export async function notifyShipmentCreated(shipment) {
   results.forEach((r, i) => {
     if (r.status === "rejected") {
       const sgErrors = r.reason?.response?.body?.errors;
-      const detail = sgErrors
-        ? JSON.stringify(sgErrors)
-        : r.reason?.message;
-      console.error(
-        `[email] Failed sending to ${messages[i].to}:`,
-        detail,
-      );
+      const detail = sgErrors ? JSON.stringify(sgErrors) : r.reason?.message;
+      console.error(`[email] Failed sending to ${messages[i].to}:`, detail);
     }
   });
 }
@@ -668,7 +732,7 @@ export async function notifyStatusUpdate(shipment, previousStatus) {
   }
 
   if (shipment.receiver_email) {
-    messages.push({
+    const receiverMsg = {
       to: shipment.receiver_email,
       from: { email: FROM_EMAIL, name: "Velizon Logistics" },
       subject: `Your shipment has been updated — ${shipment.tracking_number}`,
@@ -678,7 +742,23 @@ export async function notifyStatusUpdate(shipment, previousStatus) {
         "receiver",
         trackingUrl,
       ),
-    });
+    };
+    if (shipment.qr_code) {
+      const base64Content = shipment.qr_code.replace(
+        /^data:image\/\w+;base64,/,
+        "",
+      );
+      receiverMsg.attachments = [
+        {
+          content: base64Content,
+          type: "image/png",
+          filename: "tracking-qr.png",
+          disposition: "inline",
+          content_id: "velizon-qrcode",
+        },
+      ];
+    }
+    messages.push(receiverMsg);
   }
 
   const results = await Promise.allSettled(messages.map((m) => sgMail.send(m)));
@@ -727,7 +807,7 @@ export async function notifyDeliveryConfirmed(shipment, recipientName) {
   }
 
   if (shipment.receiver_email) {
-    messages.push({
+    const receiverMsg = {
       to: shipment.receiver_email,
       from: { email: FROM_EMAIL, name: "Velizon Logistics" },
       subject: `Your delivery has been confirmed — ${shipment.tracking_number}`,
@@ -738,7 +818,23 @@ export async function notifyDeliveryConfirmed(shipment, recipientName) {
         "receiver",
         trackingUrl,
       ),
-    });
+    };
+    if (shipment.qr_code) {
+      const base64Content = shipment.qr_code.replace(
+        /^data:image\/\w+;base64,/,
+        "",
+      );
+      receiverMsg.attachments = [
+        {
+          content: base64Content,
+          type: "image/png",
+          filename: "tracking-qr.png",
+          disposition: "inline",
+          content_id: "velizon-qrcode",
+        },
+      ];
+    }
+    messages.push(receiverMsg);
   }
 
   if (adminEmail) {

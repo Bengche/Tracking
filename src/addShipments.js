@@ -129,16 +129,56 @@ router.post("/add_shipment", async (req, res) => {
   }
 });
 
-// Get all shipments
+// Get all shipments with optional pagination and search
 router.get("/all", async (req, res) => {
   try {
-    const result = await db.query(
-      "SELECT * FROM shipments ORDER BY shipment_id DESC",
-    );
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 20));
+    const offset = (page - 1) * limit;
+    const search = (req.query.search || "").trim();
+
+    let countQuery, dataQuery, params;
+
+    if (search) {
+      const like = `%${search}%`;
+      params = [like, limit, offset];
+      countQuery = `SELECT COUNT(*) FROM shipments
+        WHERE tracking_number ILIKE $1
+           OR sender_name ILIKE $1
+           OR sender_email ILIKE $1
+           OR receiver_name ILIKE $1
+           OR receiver_email ILIKE $1
+           OR shipment_status ILIKE $1`;
+      dataQuery = `SELECT * FROM shipments
+        WHERE tracking_number ILIKE $1
+           OR sender_name ILIKE $1
+           OR sender_email ILIKE $1
+           OR receiver_name ILIKE $1
+           OR receiver_email ILIKE $1
+           OR shipment_status ILIKE $1
+        ORDER BY shipment_id DESC LIMIT $2 OFFSET $3`;
+    } else {
+      params = [limit, offset];
+      countQuery = `SELECT COUNT(*) FROM shipments`;
+      dataQuery = `SELECT * FROM shipments ORDER BY shipment_id DESC LIMIT $1 OFFSET $2`;
+    }
+
+    const [countResult, dataResult] = await Promise.all([
+      db.query(countQuery, search ? [params[0]] : []),
+      db.query(dataQuery, params),
+    ]);
+
+    const total = parseInt(countResult.rows[0].count, 10);
 
     res.json({
       success: true,
-      shipments: result.rows,
+      shipments: dataResult.rows,
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit),
+      },
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
