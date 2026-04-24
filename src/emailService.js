@@ -423,23 +423,39 @@ function buildStatusUpdateEmail(s, previousStatus, role, trackingUrl) {
     <td style="background-color:#FFF7ED;border:1px solid #FED7AA;border-radius:10px;padding:20px 24px;">
       <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0">
         <tr>
-          <td style="vertical-align:middle;width:48px;">
-            <!--[if mso]><v:roundrect xmlns:v="urn:schemas-microsoft-com:vml" arcsize="10%" style="width:44px;height:48px;" fillcolor="#F59E0B" strokecolor="#D97706"><v:textbox inset="0,0,0,0"></v:textbox></v:roundrect><![endif]-->
-            <table role="presentation" cellspacing="0" cellpadding="0" border="0" style="width:44px;border-radius:8px;overflow:hidden;border:1.5px solid #D97706;">
+          <td style="vertical-align:middle;width:64px;" width="64">
+            <!--[if mso]>
+            <v:roundrect xmlns:v="urn:schemas-microsoft-com:vml" xmlns:w="urn:schemas-microsoft-com:office:word"
+              style="height:60px;width:60px;v-text-anchor:middle;" arcsize="50%"
+              fillcolor="#F59E0B" strokecolor="#E08800">
+              <w:anchorlock/>
+              <center style="font-family:Arial,Helvetica,sans-serif;font-size:11px;font-weight:800;color:#7C2D12;letter-spacing:1px;">${calMonth}<br/><span style="font-size:22px;color:#0A1628;">${calDay}</span></center>
+            </v:roundrect>
+            <![endif]-->
+            <!--[if !mso]><!-->
+            <table role="presentation" cellspacing="0" cellpadding="0" border="0" style="margin:0 auto;">
               <tr>
-                <td align="center" style="background-color:#F59E0B;padding:3px 0 2px;font-size:9px;font-weight:800;color:#7C2D12;letter-spacing:0.5px;font-family:Arial,Helvetica,sans-serif;">
-                  ${calMonth}
-                </td>
-              </tr>
-              <tr>
-                <td align="center" style="background-color:#FFFFFF;padding:2px 0 3px;font-size:20px;font-weight:800;color:#0A1628;line-height:1;font-family:Arial,Helvetica,sans-serif;">
-                  ${calDay}
+                <td width="60" height="60" align="center" valign="middle"
+                    style="width:60px;height:60px;min-width:60px;border-radius:30px;background-color:#F59E0B;text-align:center;vertical-align:middle;">
+                  <table role="presentation" cellspacing="0" cellpadding="0" border="0" style="margin:0 auto;">
+                    <tr>
+                      <td align="center" style="padding:0 0 3px 0;font-size:10px;font-weight:800;color:#7C2D12;letter-spacing:1px;font-family:Arial,Helvetica,sans-serif;line-height:1;text-align:center;">
+                        ${calMonth}
+                      </td>
+                    </tr>
+                    <tr>
+                      <td align="center" style="padding:0;font-size:24px;font-weight:800;color:#0A1628;line-height:1;font-family:Arial,Helvetica,sans-serif;text-align:center;">
+                        ${calDay}
+                      </td>
+                    </tr>
+                  </table>
                 </td>
               </tr>
             </table>
+            <!--<![endif]-->
           </td>
-          <td style="padding-left:14px;vertical-align:middle;">
-            <p style="margin:0 0 2px;font-size:11px;font-weight:700;color:#92400E;text-transform:uppercase;letter-spacing:0.8px;font-family:Arial,Helvetica,sans-serif;">
+          <td style="padding-left:16px;vertical-align:middle;">
+            <p style="margin:0 0 3px;font-size:11px;font-weight:700;color:#92400E;text-transform:uppercase;letter-spacing:0.8px;font-family:Arial,Helvetica,sans-serif;">
               Estimated Delivery
             </p>
             <p style="margin:0;font-size:18px;font-weight:700;color:#0A1628;font-family:Arial,Helvetica,sans-serif;">
