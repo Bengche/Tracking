@@ -1,894 +1,456 @@
 import sgMail from "@sendgrid/mail";
+import fs from "node:fs/promises";
+import path from "node:path";
+import { config } from "./config.js";
+import { SHIPMENT_DOCUMENTS } from "./documents.js";
+import { trackingUrl, money } from "./pdfKit.js";
+import { documentsFor } from "./shipmentModel.js";
 
-const FROM_EMAIL = "support@velizon.com";
-const FRONTEND_URL = process.env.FRONTEND_URL || "https://velizon.com";
+if (config.email.apiKey) sgMail.setApiKey(config.email.apiKey);
 
-if (process.env.SENDGRID_API_KEY) {
-  sgMail.setApiKey(process.env.SENDGRID_API_KEY);
+// Development only: EMAIL_DEV_SINK=<folder> writes every outgoing email (and its PDFs) to disk instead of sending it.
+const devSink = process.env.NODE_ENV !== "production" ? process.env.EMAIL_DEV_SINK : undefined;
+
+export const emailEnabled = () => Boolean(config.email.apiKey) || Boolean(devSink);
+
+async function sendOne(message) {
+  if (!devSink) return sgMail.send(message);
+  await fs.mkdir(devSink, { recursive: true });
+  const stamp = `${Date.now()}-${String(message.to).replace(/[^a-z0-9@.]/gi, "_")}`;
+  await fs.writeFile(
+    path.join(devSink, `${stamp}.json`),
+    JSON.stringify({ to: message.to, subject: message.subject, attachments: (message.attachments || []).map((a) => a.filename) }, null, 2),
+  );
+  await fs.writeFile(path.join(devSink, `${stamp}.html`), message.html);
+  for (const a of message.attachments || []) {
+    await fs.writeFile(path.join(devSink, `${stamp}-${a.filename}`), Buffer.from(a.content, "base64"));
+  }
 }
 
-// ── Shared layout helpers ───────────────────────────────────────────────────
-function emailWrapper(content) {
-  return `<!DOCTYPE html>
-<html lang="en" xmlns="http://www.w3.org/1999/xhtml">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta http-equiv="X-UA-Compatible" content="IE=edge" />
-  <!--[if mso]><noscript><xml><o:OfficeDocumentSettings><o:PixelsPerInch>96</o:PixelsPerInch></o:OfficeDocumentSettings></xml></noscript><![endif]-->
-</head>
-<body style="margin:0;padding:0;background-color:#EEF2F7;-webkit-text-size-adjust:100%;-ms-text-size-adjust:100%;">
-  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background-color:#EEF2F7;">
-    <tr>
-      <td align="center" style="padding:40px 16px;">
-        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="max-width:600px;width:100%;">
-          ${content}
-        </table>
-      </td>
-    </tr>
-  </table>
-</body>
-</html>`;
-}
+const FROM = { email: config.email.from, name: config.company.name };
 
-function emailHeader(title, subtitle) {
-  return `
-<tr>
-  <td style="background-color:#0A1628;border-radius:12px 12px 0 0;padding:36px 40px 32px;">
-    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0">
-      <tr>
-        <td>
-          <span style="font-size:13px;font-weight:800;color:#F59E0B;letter-spacing:4px;text-transform:uppercase;font-family:Arial,Helvetica,sans-serif;">VELIZON</span>
-        </td>
-      </tr>
-      <tr>
-        <td style="padding-top:20px;">
-          <h1 style="margin:0;font-size:22px;font-weight:700;color:#FFFFFF;line-height:1.35;font-family:Arial,Helvetica,sans-serif;">${title}</h1>
-        </td>
-      </tr>
-      ${subtitle ? `<tr><td style="padding-top:8px;"><p style="margin:0;font-size:13px;color:#94A3B8;font-family:Arial,Helvetica,sans-serif;">${subtitle}</p></td></tr>` : ""}
-    </table>
-  </td>
-</tr>`;
-}
+const esc = (v) =>
+  String(v ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 
-function emailBody(inner) {
-  return `
-<tr>
-  <td style="background-color:#FFFFFF;padding:36px 40px;font-family:Arial,Helvetica,sans-serif;">
-    ${inner}
-  </td>
-</tr>`;
-}
+const place = (...parts) => parts.filter((p) => p && String(p).trim()).join(", ");
 
-function emailFooter() {
-  const year = new Date().getFullYear();
-  return `
-<tr>
-  <td style="background-color:#0F172A;border-radius:0 0 12px 12px;padding:28px 40px;">
-    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0">
-      <tr>
-        <td align="center">
-          <p style="margin:0;font-size:13px;color:#64748B;line-height:1.7;font-family:Arial,Helvetica,sans-serif;">
-            Questions? Contact us at
-            <a href="mailto:support@velizon.com" style="color:#F59E0B;text-decoration:none;">support@velizon.com</a>
-          </p>
-          <p style="margin:10px 0 0;font-size:11px;color:#334155;font-family:Arial,Helvetica,sans-serif;">
-            &copy; ${year} Velizon Logistics &middot; All rights reserved
-          </p>
-        </td>
-      </tr>
-    </table>
-  </td>
-</tr>`;
-}
+const fmtDay = (v) => {
+  if (!v) return "";
+  const d = new Date(`${String(v).slice(0, 10)}T00:00:00Z`);
+  return Number.isNaN(d.getTime())
+    ? ""
+    : d.toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long", year: "numeric", timeZone: "UTC" });
+};
 
-function ctaButton(label, url) {
-  return `
-<table role="presentation" cellspacing="0" cellpadding="0" border="0" style="margin:28px 0 8px;">
-  <tr>
-    <td style="border-radius:8px;background-color:#F59E0B;">
-      <a href="${url}" target="_blank"
-        style="display:inline-block;padding:14px 34px;font-size:15px;font-weight:700;color:#0A1628;text-decoration:none;font-family:Arial,Helvetica,sans-serif;letter-spacing:0.2px;"
-      >${label}</a>
-    </td>
-  </tr>
-</table>`;
-}
+const fmtInstant = (v) => {
+  const d = new Date(v);
+  return Number.isNaN(d.getTime())
+    ? ""
+    : `${d.toLocaleString("en-GB", { day: "numeric", month: "long", year: "numeric", hour: "2-digit", minute: "2-digit", timeZone: "UTC" })} UTC`;
+};
+
+const FONT = "-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif";
 
 function detailsTable(rows) {
-  const visibleRows = rows.filter(
-    ([, v]) => v !== undefined && v !== null && v !== "",
-  );
-  const cells = visibleRows
+  const body = rows
+    .filter(([, v]) => v !== undefined && v !== null && String(v).trim() !== "")
     .map(
-      ([label, value]) => `
-<tr>
-  <td style="padding:11px 16px;font-size:12px;color:#64748B;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;white-space:nowrap;width:40%;border-bottom:1px solid #F1F5F9;font-family:Arial,Helvetica,sans-serif;vertical-align:top;">${label}</td>
-  <td style="padding:11px 16px;font-size:14px;color:#1E293B;font-weight:500;border-bottom:1px solid #F1F5F9;font-family:Arial,Helvetica,sans-serif;">${value}</td>
+      ([k, v]) => `<tr>
+  <td style="padding:10px 0;width:38%;border-top:1px solid #E3E7EC;font:600 12px ${FONT};color:#7B8696;text-transform:uppercase;letter-spacing:.04em;vertical-align:top;">${esc(k)}</td>
+  <td style="padding:10px 0;border-top:1px solid #E3E7EC;font:400 14px/1.5 ${FONT};color:#0F1B2A;">${esc(v)}</td>
 </tr>`,
     )
     .join("");
-
-  return `
-<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0"
-  style="border:1px solid #E2E8F0;border-radius:8px;overflow:hidden;margin:20px 0;">
-  <thead>
-    <tr style="background-color:#F8FAFC;">
-      <th colspan="2" style="padding:12px 16px;text-align:left;font-size:11px;color:#94A3B8;font-weight:700;text-transform:uppercase;letter-spacing:1px;border-bottom:1px solid #E2E8F0;font-family:Arial,Helvetica,sans-serif;">
-        Shipment Details
-      </th>
-    </tr>
-  </thead>
-  <tbody>
-    ${cells}
-  </tbody>
-</table>`;
+  return `<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="margin:20px 0 4px;">${body}</table>`;
 }
 
-function statusBadge(status) {
-  const lower = (status || "").toLowerCase();
-  let bg = "#FEF3C7";
-  let fg = "#92400E";
-  if (lower.includes("delivered")) {
-    bg = "#D1FAE5";
-    fg = "#065F46";
-  } else if (
-    lower.includes("transit") ||
-    lower.includes("progress") ||
-    lower.includes("dispatched")
-  ) {
-    bg = "#DBEAFE";
-    fg = "#1E40AF";
-  } else if (lower.includes("pending") || lower.includes("processing")) {
-    bg = "#FEF3C7";
-    fg = "#92400E";
-  } else if (
-    lower.includes("exception") ||
-    lower.includes("failed") ||
-    lower.includes("return")
-  ) {
-    bg = "#FEE2E2";
-    fg = "#991B1B";
+const paragraph = (text) =>
+  `<p style="margin:0 0 14px;font:400 15px/1.65 ${FONT};color:#2A3646;">${esc(text)}</p>`;
+
+function button(label, url) {
+  return `<table role="presentation" cellspacing="0" cellpadding="0" border="0" style="margin:22px 0 6px;"><tr>
+  <td style="border-radius:6px;background:#0B1F33;"><a href="${esc(url)}" style="display:inline-block;padding:13px 24px;font:600 15px ${FONT};color:#FFFFFF;text-decoration:none;">${esc(label)}</a></td>
+</tr></table>`;
+}
+
+function layout({ preheader, title, inner, note }) {
+  return `<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(title)}</title></head>
+<body style="margin:0;padding:0;background:#F6F7F9;">
+<span style="display:none;max-height:0;overflow:hidden;opacity:0;">${esc(preheader || title)}</span>
+<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background:#F6F7F9;"><tr><td align="center" style="padding:32px 16px;">
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="max-width:600px;">
+    <tr><td style="padding:0 0 16px;font:700 18px ${FONT};color:#0B1F33;letter-spacing:-.01em;">${esc(config.company.brand)}</td></tr>
+    <tr><td style="background:#FFFFFF;border:1px solid #E3E7EC;border-radius:8px;padding:32px 32px 26px;">
+      <h1 style="margin:0 0 18px;font:600 22px/1.3 ${FONT};color:#0B1F33;letter-spacing:-.01em;">${esc(title)}</h1>
+      ${inner}
+    </td></tr>
+    <tr><td style="padding:20px 4px 0;font:400 12px/1.7 ${FONT};color:#7B8696;">
+      ${note ? `${esc(note)}<br>` : ""}
+      Questions? Reply to this email or contact <a href="mailto:${esc(config.company.supportEmail)}" style="color:#1B4469;">${esc(config.company.supportEmail)}</a>.<br>
+      &copy; ${new Date().getFullYear()} ${esc(config.company.name)}
+    </td></tr>
+  </table>
+</td></tr></table></body></html>`;
+}
+
+const pdfAttachment = (filename, content) => ({
+  content: content.toString("base64"),
+  filename,
+  type: "application/pdf",
+  disposition: "attachment",
+});
+
+/** Builds the requested shipment documents; returns { attachments, names } for those that exist. */
+async function buildDocuments(shipment, types) {
+  const attachments = [];
+  const names = [];
+  const available = documentsFor(shipment);
+  for (const type of types) {
+    if (!available.includes(type)) continue;
+    const doc = SHIPMENT_DOCUMENTS[type];
+    try {
+      attachments.push(pdfAttachment(`${shipment.tracking_number}-${doc.file}.pdf`, await doc.build(shipment)));
+      names.push(doc.name.toLowerCase());
+    } catch (err) {
+      console.error(`[documents] could not build ${type}:`, err.message);
+    }
   }
-  return `<span style="display:inline-block;padding:4px 14px;border-radius:20px;font-size:13px;font-weight:700;background-color:${bg};color:${fg};font-family:Arial,Helvetica,sans-serif;">${status || "—"}</span>`;
+  return { attachments, names };
 }
 
-function divider() {
-  return `<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="margin:24px 0;">
-  <tr><td style="border-top:1px solid #F1F5F9;"></td></tr>
-</table>`;
+const listNames = (names) =>
+  names.length <= 1 ? names[0] || "" : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+
+async function deliver(messages) {
+  if (!emailEnabled() || messages.length === 0) return { sent: 0, failed: 0 };
+  const results = await Promise.allSettled(messages.map((m) => sendOne(m)));
+  let failed = 0;
+  results.forEach((r, i) => {
+    if (r.status === "rejected") {
+      failed += 1;
+      const detail = r.reason?.response?.body?.errors
+        ? JSON.stringify(r.reason.response.body.errors)
+        : r.reason?.message;
+      console.error(`[email] failed to send to ${messages[i].to}:`, detail);
+    }
+  });
+  return { sent: messages.length - failed, failed };
 }
 
-// ── Template builders ───────────────────────────────────────────────────────
-function buildSenderCreatedEmail(s, trackingUrl) {
-  const expectedDate = s.expected_delivery
-    ? new Date(s.expected_delivery).toLocaleDateString("en-US", {
-        weekday: "long",
-        year: "numeric",
-        month: "long",
-        day: "numeric",
-      })
-    : null;
+const route = (s) => `${place(s.origin_location, s.origin_country)} to ${place(s.destination_location, s.destination_country)}`;
 
-  const table = detailsTable([
-    [
-      "Tracking Number",
-      `<strong style="font-family:monospace,Courier,serif;font-size:15px;color:#0A1628;letter-spacing:1px;">${s.tracking_number}</strong>`,
-    ],
-    ["Status", statusBadge(s.shipment_status || "Processing")],
-    [
-      "From",
-      s.origin_location
-        ? `${s.origin_location}, ${s.origin_country || ""}`
-        : s.origin_country,
-    ],
-    [
-      "To",
-      s.destination_location
-        ? `${s.destination_location}, ${s.destination_country || ""}`
-        : s.destination_country,
-    ],
-    ["Recipient", s.receiver_name],
-    ["Expected Delivery", expectedDate],
-    ["Shipment Type", s.shipment_type],
-    ["Weight", s.weight ? `${s.weight} kg` : null],
-  ]);
-
-  const body = `
-<p style="margin:0 0 6px;font-size:16px;color:#0F172A;font-family:Arial,Helvetica,sans-serif;">
-  Hello <strong>${s.sender_name || "there"}</strong>,
-</p>
-<p style="margin:0 0 20px;font-size:15px;color:#475569;line-height:1.75;font-family:Arial,Helvetica,sans-serif;">
-  Your shipment has been registered in our system and is on its way to the next step. Use the tracking number below to monitor its progress at any time.
-</p>
-${table}
-${ctaButton("Track My Shipment", trackingUrl)}
-${divider()}
-<p style="margin:0;font-size:13px;color:#94A3B8;line-height:1.6;font-family:Arial,Helvetica,sans-serif;">
-  Share tracking number
-  <strong style="color:#64748B;">${s.tracking_number}</strong>
-  with your recipient so they can also follow the shipment.
-</p>`;
-
-  return emailWrapper(
-    emailHeader(
-      "Your shipment has been registered",
-      "Velizon Logistics &mdash; Shipment Confirmation",
-    ) +
-      emailBody(body) +
-      emailFooter(),
-  );
+function shipmentRows(s) {
+  return [
+    ["Tracking number", s.tracking_number],
+    ["Route", route(s)],
+    ["Service", s.shipment_type],
+    ["Pieces", s.pieces],
+    ["Weight", s.weight],
+    ["Expected delivery", fmtDay(s.expected_delivery)],
+  ];
 }
 
-function buildReceiverCreatedEmail(s, trackingUrl) {
-  const expectedDate = s.expected_delivery
-    ? new Date(s.expected_delivery).toLocaleDateString("en-US", {
-        weekday: "long",
-        year: "numeric",
-        month: "long",
-        day: "numeric",
-      })
-    : null;
+/** Registration emails with the waybill (and commercial invoice, when applicable) attached. */
+export async function notifyShipmentCreated(shipment, { resend = false } = {}) {
+  if (!emailEnabled()) return { sent: 0, failed: 0 };
+  const url = trackingUrl(shipment);
+  const { attachments, names } = await buildDocuments(shipment, ["waybill", "invoice", "packing_list", "customs"]);
+  const attached = names.length ? `Attached: ${listNames(names)}.` : "";
+  const messages = [];
 
-  const table = detailsTable([
-    [
-      "Tracking Number",
-      `<strong style="font-family:monospace,Courier,serif;font-size:15px;color:#0A1628;letter-spacing:1px;">${s.tracking_number}</strong>`,
-    ],
-    ["Status", statusBadge(s.shipment_status || "Processing")],
-    ["Sender", s.sender_name],
-    [
-      "From",
-      s.origin_location
-        ? `${s.origin_location}, ${s.origin_country || ""}`
-        : s.origin_country,
-    ],
-    [
-      "Destination",
-      s.destination_location
-        ? `${s.destination_location}, ${s.destination_country || ""}`
-        : s.destination_country,
-    ],
-    ["Expected Delivery", expectedDate],
-    ["Shipment Type", s.shipment_type],
-  ]);
+  if (shipment.sender_email) {
+    messages.push({
+      to: shipment.sender_email,
+      from: FROM,
+      subject: `${resend ? "Reminder: " : ""}Shipment registered: ${shipment.tracking_number}`,
+      html: layout({
+        title: "Your shipment is registered",
+        preheader: `Tracking number ${shipment.tracking_number}`,
+        inner:
+          paragraph(`Hello ${shipment.sender_name}, your shipment to ${shipment.receiver_name} has been registered with ${config.company.brand}. ${attached}`) +
+          detailsTable([...shipmentRows(shipment), ["Recipient", shipment.receiver_name]]) +
+          button("Track shipment", url) +
+          paragraph("You will receive an email whenever the status of this shipment changes."),
+      }),
+      attachments,
+    });
+  }
 
-  // Use CID reference — the actual image is sent as an inline attachment.
-  // Data URLs are blocked by virtually all email clients (Gmail, Outlook, Apple Mail).
-  const qrSection = s.qr_code
-    ? `
-<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="margin:28px 0;">
-  <tr>
-    <td align="center" style="background-color:#F8FAFC;border:1px solid #E2E8F0;border-radius:10px;padding:28px 20px;">
-      <p style="margin:0 0 16px;font-size:12px;color:#64748B;text-transform:uppercase;letter-spacing:0.8px;font-weight:700;font-family:Arial,Helvetica,sans-serif;">
-        Scan to track your shipment
-      </p>
-      <img src="cid:velizon-qrcode" alt="Tracking QR Code" width="160" height="160"
-        style="display:block;border:none;outline:none;border-radius:6px;" />
-      <p style="margin:14px 0 0;font-size:13px;color:#94A3B8;font-family:Arial,Helvetica,sans-serif;">
-        Or use tracking number <strong style="color:#64748B;">${s.tracking_number}</strong>
-      </p>
-    </td>
-  </tr>
-</table>`
-    : "";
+  if (shipment.receiver_email) {
+    messages.push({
+      to: shipment.receiver_email,
+      from: FROM,
+      subject: `${resend ? "Reminder: " : ""}A shipment is on its way to you: ${shipment.tracking_number}`,
+      html: layout({
+        title: "A shipment is on its way to you",
+        preheader: `Tracking number ${shipment.tracking_number}`,
+        inner:
+          paragraph(`Hello ${shipment.receiver_name}, ${shipment.sender_name} has sent you a shipment with ${config.company.brand}. ${attached}`) +
+          detailsTable([...shipmentRows(shipment), ["Sender", shipment.sender_name]]) +
+          button("Track shipment", url) +
+          paragraph("When your shipment is delivered you will be asked to confirm receipt on the tracking page. Please keep the attached waybill for your records."),
+      }),
+      attachments,
+    });
+  }
 
-  const body = `
-<p style="margin:0 0 6px;font-size:16px;color:#0F172A;font-family:Arial,Helvetica,sans-serif;">
-  Hello <strong>${s.receiver_name || "there"}</strong>,
-</p>
-<p style="margin:0 0 20px;font-size:15px;color:#475569;line-height:1.75;font-family:Arial,Helvetica,sans-serif;">
-  A shipment from <strong>${s.sender_name || "a sender"}</strong> has been registered and is heading your way.
-  You can track its progress in real time using the button below or by scanning the QR code.
-</p>
-${table}
-${qrSection}
-${ctaButton("Track My Shipment", trackingUrl)}
-${divider()}
-<p style="margin:0;font-size:13px;color:#94A3B8;line-height:1.6;font-family:Arial,Helvetica,sans-serif;">
-  You will receive email updates whenever your shipment status changes.
-</p>`;
+  if (!resend && config.email.adminTo) {
+    messages.push({
+      to: config.email.adminTo,
+      from: FROM,
+      subject: `[Staff] New shipment ${shipment.tracking_number}`,
+      html: layout({
+        title: "New shipment registered",
+        inner:
+          detailsTable([
+            ...shipmentRows(shipment),
+            ["Sender", `${shipment.sender_name} (${shipment.sender_email})`],
+            ["Recipient", `${shipment.receiver_name} (${shipment.receiver_email})`],
+          ]) + button("Open tracking page", url),
+      }),
+    });
+  }
 
-  return emailWrapper(
-    emailHeader(
-      "A shipment is on its way to you",
-      "Velizon Logistics &mdash; Incoming Shipment",
-    ) +
-      emailBody(body) +
-      emailFooter(),
-  );
+  return deliver(messages);
 }
 
-function buildAdminCreatedEmail(s, trackingUrl) {
-  const expectedDate = s.expected_delivery
-    ? new Date(s.expected_delivery).toLocaleDateString("en-US", {
-        year: "numeric",
-        month: "long",
-        day: "numeric",
-      })
-    : null;
+/** Emails sender and receiver after a status or location change. */
+export async function notifyStatusUpdate(shipment, previousStatus, note) {
+  if (!emailEnabled()) return { sent: 0, failed: 0 };
+  const url = trackingUrl(shipment);
+  const status = shipment.shipment_status;
+  const needsConfirmation = ["out for delivery", "delivered"].includes(status.toLowerCase());
 
-  const table = detailsTable([
-    [
-      "Tracking Number",
-      `<strong style="font-family:monospace,Courier,serif;color:#0A1628;">${s.tracking_number}</strong>`,
-    ],
-    ["Shipment ID", s.shipment_id],
-    ["Status", statusBadge(s.shipment_status || "Processing")],
-    ["Sender", s.sender_name],
-    ["Sender Email", s.sender_email],
-    ["Sender Phone", s.sender_phone],
-    ["Sender Address", s.sender_address],
-    ["Receiver", s.receiver_name],
-    ["Receiver Email", s.receiver_email],
-    ["Receiver Phone", s.receiver_phone],
-    ["Receiver Address", s.receiver_address],
-    ["Receiver Country", s.receiver_country],
-    [
-      "Origin",
-      s.origin_location
-        ? `${s.origin_location}, ${s.origin_country || ""}`
-        : s.origin_country,
-    ],
-    [
-      "Destination",
-      s.destination_location
-        ? `${s.destination_location}, ${s.destination_country || ""}`
-        : s.destination_country,
-    ],
-    ["Current Location", s.current_location],
-    ["Expected Delivery", expectedDate],
-    ["Type", s.shipment_type],
-    ["Weight", s.weight ? `${s.weight} kg` : null],
-    ["Dimensions", s.dimensions],
-    ["Contents", s.contents],
-    ["Remarks", s.remarks],
-  ]);
-
-  const body = `
-<p style="margin:0 0 20px;font-size:15px;color:#475569;line-height:1.75;font-family:Arial,Helvetica,sans-serif;">
-  A new shipment has been registered in the system.
-</p>
-${table}
-${ctaButton("View Shipment", trackingUrl)}`;
-
-  return emailWrapper(
-    emailHeader(
-      "New shipment registered",
-      `Admin Notification &mdash; ${new Date().toDateString()}`,
-    ) +
-      emailBody(body) +
-      emailFooter(),
-  );
-}
-
-function buildStatusUpdateEmail(s, previousStatus, role, trackingUrl) {
-  const recipientName = role === "sender" ? s.sender_name : s.receiver_name;
-  const expectedDate = s.expected_delivery
-    ? new Date(s.expected_delivery).toLocaleDateString("en-US", {
-        weekday: "long",
-        year: "numeric",
-        month: "long",
-        day: "numeric",
-      })
-    : null;
-
-  const contextLine =
-    role === "sender"
-      ? `Your shipment to <strong>${s.receiver_name || "the recipient"}</strong> in <strong>${s.destination_country || s.destination_location || "the destination"}</strong> has a new update.`
-      : `A shipment from <strong>${s.sender_name || "the sender"}</strong> addressed to you has a new update.`;
-
-  // Remove Expected Delivery from the table rows — it gets its own prominent banner below
-  const tableRows = [
-    [
-      "Tracking Number",
-      `<strong style="font-family:monospace,Courier,serif;font-size:15px;color:#0A1628;letter-spacing:1px;">${s.tracking_number}</strong>`,
-    ],
-    ...(previousStatus
-      ? [
-          [
-            "Previous Status",
-            `<span style="color:#94A3B8;">${previousStatus}</span>`,
-          ],
-        ]
-      : []),
-    ["Current Status", statusBadge(s.shipment_status || "")],
-    ["Current Location", s.current_location],
-    [
-      "Origin",
-      s.origin_location
-        ? `${s.origin_location}, ${s.origin_country || ""}`
-        : s.origin_country,
-    ],
-    [
-      "Destination",
-      s.destination_location
-        ? `${s.destination_location}, ${s.destination_country || ""}`
-        : s.destination_country,
-    ],
-    ...(s.remarks ? [["Remarks", s.remarks]] : []),
+  const rows = [
+    ["Tracking number", shipment.tracking_number],
+    ["Status", previousStatus && previousStatus !== status ? `${previousStatus} to ${status}` : status],
+    ["Current location", shipment.current_location],
+    ["Update", note],
+    ["Expected delivery", fmtDay(shipment.expected_delivery)],
   ];
 
-  // Prominent expected-delivery banner shown above the CTA
-  let deliveryBanner = "";
-  if (expectedDate && s.expected_delivery) {
-    const d = new Date(s.expected_delivery);
-    const calDay = d.getUTCDate();
-    const calMonth = d.toLocaleDateString("en-US", { month: "short", timeZone: "UTC" }).toUpperCase();
+  const build = (name, body, extra = "") => ({
+    title: `Shipment update: ${status}`,
+    preheader: `${shipment.tracking_number} is now ${status}`,
+    inner: paragraph(`Hello ${name}, ${body}`) + detailsTable(rows) + button("View tracking history", url) + extra,
+  });
 
-    deliveryBanner = `
-<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="margin:24px 0;">
-  <tr>
-    <td style="background-color:#FFF7ED;border:1px solid #FED7AA;border-radius:10px;padding:20px 24px;">
-      <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0">
-        <tr>
-          <td style="vertical-align:middle;width:64px;" width="64">
-            <!--[if mso]>
-            <v:roundrect xmlns:v="urn:schemas-microsoft-com:vml" xmlns:w="urn:schemas-microsoft-com:office:word"
-              style="height:60px;width:60px;v-text-anchor:middle;" arcsize="50%"
-              fillcolor="#F59E0B" strokecolor="#E08800">
-              <w:anchorlock/>
-              <center style="font-family:Arial,Helvetica,sans-serif;font-size:11px;font-weight:800;color:#7C2D12;letter-spacing:1px;">${calMonth}<br/><span style="font-size:22px;color:#0A1628;">${calDay}</span></center>
-            </v:roundrect>
-            <![endif]-->
-            <!--[if !mso]><!-->
-            <table role="presentation" cellspacing="0" cellpadding="0" border="0" style="margin:0 auto;">
-              <tr>
-                <td width="60" height="60" align="center" valign="middle"
-                    style="width:60px;height:60px;min-width:60px;border-radius:30px;background-color:#F59E0B;text-align:center;vertical-align:middle;">
-                  <table role="presentation" cellspacing="0" cellpadding="0" border="0" style="margin:0 auto;">
-                    <tr>
-                      <td align="center" style="padding:0 0 3px 0;font-size:10px;font-weight:800;color:#7C2D12;letter-spacing:1px;font-family:Arial,Helvetica,sans-serif;line-height:1;text-align:center;">
-                        ${calMonth}
-                      </td>
-                    </tr>
-                    <tr>
-                      <td align="center" style="padding:0;font-size:24px;font-weight:800;color:#0A1628;line-height:1;font-family:Arial,Helvetica,sans-serif;text-align:center;">
-                        ${calDay}
-                      </td>
-                    </tr>
-                  </table>
-                </td>
-              </tr>
-            </table>
-            <!--<![endif]-->
-          </td>
-          <td style="padding-left:16px;vertical-align:middle;">
-            <p style="margin:0 0 3px;font-size:11px;font-weight:700;color:#92400E;text-transform:uppercase;letter-spacing:0.8px;font-family:Arial,Helvetica,sans-serif;">
-              Estimated Delivery
-            </p>
-            <p style="margin:0;font-size:18px;font-weight:700;color:#0A1628;font-family:Arial,Helvetica,sans-serif;">
-              ${expectedDate}
-            </p>
-          </td>
-        </tr>
-      </table>
-    </td>
-  </tr>
-</table>`;
+  const messages = [];
+  if (shipment.sender_email) {
+    messages.push({
+      to: shipment.sender_email,
+      from: FROM,
+      subject: `Shipment update: ${status} (${shipment.tracking_number})`,
+      html: layout(build(shipment.sender_name, `your shipment to ${shipment.receiver_name} has a new status.`)),
+    });
   }
-
-  const qrSection =
-    role === "receiver" && s.qr_code
-      ? `
-<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="margin:28px 0;">
-  <tr>
-    <td align="center" style="background-color:#F8FAFC;border:1px solid #E2E8F0;border-radius:10px;padding:28px 20px;">
-      <p style="margin:0 0 16px;font-size:12px;color:#64748B;text-transform:uppercase;letter-spacing:0.8px;font-weight:700;font-family:Arial,Helvetica,sans-serif;">
-        Scan to track your shipment
-      </p>
-      <img src="cid:velizon-qrcode" alt="Tracking QR Code" width="160" height="160"
-        style="display:block;border:none;outline:none;border-radius:6px;" />
-      <p style="margin:14px 0 0;font-size:13px;color:#94A3B8;font-family:Arial,Helvetica,sans-serif;">
-        Or use tracking number <strong style="color:#64748B;">${s.tracking_number}</strong>
-      </p>
-    </td>
-  </tr>
-</table>`
-      : "";
-
-  const body = `
-<p style="margin:0 0 6px;font-size:16px;color:#0F172A;font-family:Arial,Helvetica,sans-serif;">
-  Hello <strong>${recipientName || "there"}</strong>,
-</p>
-<p style="margin:0 0 20px;font-size:15px;color:#475569;line-height:1.75;font-family:Arial,Helvetica,sans-serif;">
-  ${contextLine}
-</p>
-${detailsTable(tableRows)}
-${deliveryBanner}
-${qrSection}
-${ctaButton("Track Shipment", trackingUrl)}
-${divider()}
-<p style="margin:0;font-size:13px;color:#94A3B8;line-height:1.6;font-family:Arial,Helvetica,sans-serif;">
-  You will continue to receive updates whenever your shipment status changes.
-</p>`;
-
-  return emailWrapper(
-    emailHeader(
-      "Shipment status updated",
-      `Velizon Logistics &mdash; Update for ${s.tracking_number}`,
-    ) +
-      emailBody(body) +
-      emailFooter(),
-  );
+  if (shipment.receiver_email) {
+    messages.push({
+      to: shipment.receiver_email,
+      from: FROM,
+      subject: `Your shipment is ${status.toLowerCase()} (${shipment.tracking_number})`,
+      html: layout(
+        build(
+          shipment.receiver_name,
+          `your shipment from ${shipment.sender_name} has a new status.`,
+          needsConfirmation ? paragraph("When you have received the shipment, please confirm receipt on the tracking page.") : "",
+        ),
+      ),
+    });
+  }
+  return deliver(messages);
 }
 
-function buildDeliveryConfirmedEmail(
-  s,
-  recipientName,
-  timestamp,
-  role,
-  trackingUrl,
-) {
-  const addresseeName =
-    role === "sender"
-      ? s.sender_name
-      : role === "receiver"
-        ? s.receiver_name
-        : "Admin";
+/** Proof of delivery to sender, receiver and staff after the recipient signs. */
+export async function notifyDeliveryConfirmed(shipment) {
+  if (!emailEnabled()) return { sent: 0, failed: 0 };
+  const url = trackingUrl(shipment);
+  const { attachments } = await buildDocuments(shipment, ["pod"]);
+  const rows = [
+    ["Tracking number", shipment.tracking_number],
+    ["Delivered on", fmtInstant(shipment.delivered_at)],
+    ["Received by", shipment.signed_by],
+    ["Delivery address", place(shipment.receiver_address, shipment.destination_location, shipment.destination_country)],
+  ];
+  const message = (to, name, body, subject) => ({
+    to,
+    from: FROM,
+    subject,
+    html: layout({
+      title: "Delivery confirmed",
+      preheader: `${shipment.tracking_number} was received by ${shipment.signed_by}`,
+      inner: paragraph(`Hello ${name}, ${body} The proof of delivery is attached.`) + detailsTable(rows) + button("View shipment", url),
+    }),
+    attachments,
+  });
 
-  let intro = "";
-  if (role === "sender") {
-    intro = `Your shipment to <strong>${s.receiver_name || "the recipient"}</strong> has been successfully delivered and confirmed with a digital signature.`;
-  } else if (role === "receiver") {
-    intro = `Your delivery from <strong>${s.sender_name || "the sender"}</strong> has been confirmed. Thank you for signing for your shipment.`;
-  } else {
-    intro = `Shipment <strong>${s.tracking_number}</strong> has been delivered and confirmed by the recipient.`;
+  const messages = [];
+  if (shipment.sender_email) {
+    messages.push(message(shipment.sender_email, shipment.sender_name, `your shipment to ${shipment.receiver_name} has been delivered and receipt was confirmed.`, `Delivery confirmed: ${shipment.tracking_number}`));
   }
-
-  const confirmedBanner = `
-<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="margin:0 0 24px;">
-  <tr>
-    <td style="background-color:#ECFDF5;border:1px solid #6EE7B7;border-radius:8px;padding:16px 20px;">
-      <p style="margin:0;font-size:14px;color:#065F46;font-weight:700;font-family:Arial,Helvetica,sans-serif;">
-        &#10003;&nbsp;&nbsp;Delivery confirmed on ${timestamp}
-      </p>
-    </td>
-  </tr>
-</table>`;
-
-  const table = detailsTable([
-    [
-      "Tracking Number",
-      `<strong style="font-family:monospace,Courier,serif;font-size:15px;color:#0A1628;letter-spacing:1px;">${s.tracking_number}</strong>`,
-    ],
-    ["Delivery Status", statusBadge("Delivered - Confirmed")],
-    ["Confirmed By", recipientName],
-    ["Confirmed On", timestamp],
-    [
-      "Origin",
-      s.origin_location
-        ? `${s.origin_location}, ${s.origin_country || ""}`
-        : s.origin_country,
-    ],
-    [
-      "Destination",
-      s.destination_location
-        ? `${s.destination_location}, ${s.destination_country || ""}`
-        : s.destination_country,
-    ],
-    ["Sender", role !== "sender" ? s.sender_name : null],
-    ["Recipient", role !== "receiver" ? s.receiver_name : null],
-  ]);
-
-  const qrSection =
-    role === "receiver" && s.qr_code
-      ? `
-<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="margin:28px 0;">
-  <tr>
-    <td align="center" style="background-color:#F8FAFC;border:1px solid #E2E8F0;border-radius:10px;padding:28px 20px;">
-      <p style="margin:0 0 16px;font-size:12px;color:#64748B;text-transform:uppercase;letter-spacing:0.8px;font-weight:700;font-family:Arial,Helvetica,sans-serif;">
-        Your tracking QR code
-      </p>
-      <img src="cid:velizon-qrcode" alt="Tracking QR Code" width="160" height="160"
-        style="display:block;border:none;outline:none;border-radius:6px;" />
-      <p style="margin:14px 0 0;font-size:13px;color:#94A3B8;font-family:Arial,Helvetica,sans-serif;">
-        Tracking number <strong style="color:#64748B;">${s.tracking_number}</strong>
-      </p>
-    </td>
-  </tr>
-</table>`
-      : "";
-
-  const body = `
-<p style="margin:0 0 6px;font-size:16px;color:#0F172A;font-family:Arial,Helvetica,sans-serif;">
-  Hello <strong>${addresseeName || "there"}</strong>,
-</p>
-<p style="margin:0 0 24px;font-size:15px;color:#475569;line-height:1.75;font-family:Arial,Helvetica,sans-serif;">
-  ${intro}
-</p>
-${confirmedBanner}
-${table}
-${qrSection}
-${ctaButton("View Shipment", trackingUrl)}`;
-
-  return emailWrapper(
-    emailHeader(
-      "Delivery confirmed",
-      `Velizon Logistics &mdash; ${s.tracking_number}`,
-    ) +
-      emailBody(body) +
-      emailFooter(),
-  );
+  if (shipment.receiver_email) {
+    messages.push(message(shipment.receiver_email, shipment.receiver_name, "thank you for confirming receipt of your shipment.", `Proof of delivery: ${shipment.tracking_number}`));
+  }
+  if (config.email.adminTo) {
+    messages.push(message(config.email.adminTo, "team", `shipment ${shipment.tracking_number} was confirmed as received.`, `[Staff] Delivery confirmed: ${shipment.tracking_number}`));
+  }
+  return deliver(messages);
 }
 
-// ── Public API ──────────────────────────────────────────────────────────────
-
-/**
- * Send a contact inquiry from the /contact page to ADMIN_EMAIL.
- */
 export async function sendContactInquiry({ name, email, subject, message }) {
-  if (!process.env.SENDGRID_API_KEY) return;
-  const adminEmail = process.env.ADMIN_EMAIL;
-  if (!adminEmail) return;
+  if (!emailEnabled() || !config.email.adminTo) return;
+  await deliver([
+    {
+      to: config.email.adminTo,
+      from: FROM,
+      replyTo: { email, name },
+      subject: `[Contact] ${subject} (${name})`,
+      html: layout({
+        title: "New message from the website",
+        inner:
+          detailsTable([
+            ["Name", name],
+            ["Email", email],
+            ["Subject", subject],
+          ]) +
+          `<div style="margin:16px 0 4px;padding:16px;background:#F6F7F9;border:1px solid #E3E7EC;border-radius:6px;font:400 14px/1.7 ${FONT};color:#0F1B2A;white-space:pre-wrap;">${esc(message)}</div>`,
+      }),
+    },
+  ]);
+}
 
-  const html = emailWrapper(
-    emailHeader(
-      `New Contact Inquiry: ${subject}`,
-      `Submitted via the website contact form`,
-    ) +
-      emailBody(`
-<p style="margin:0 0 20px;font-size:15px;color:#475569;line-height:1.75;font-family:Arial,Helvetica,sans-serif;">
-  A visitor has submitted a message through the contact form.
-</p>
-${detailsTable([
-  ["Name", name],
-  [
-    "Email",
-    `<a href="mailto:${email}" style="color:#F59E0B;text-decoration:none;">${email}</a>`,
-  ],
-  ["Subject", subject],
-])}
-<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="margin:20px 0;">
-  <tr>
-    <td style="padding:16px;background-color:#F8FAFC;border:1px solid #E2E8F0;border-radius:8px;font-size:14px;color:#1E293B;line-height:1.75;font-family:Arial,Helvetica,sans-serif;">
-      ${message.replace(/\n/g, "<br />")}
-    </td>
-  </tr>
-</table>
-<table role="presentation" cellspacing="0" cellpadding="0" border="0" style="margin:8px 0;">
-  <tr>
-    <td style="border-radius:8px;background-color:#0A1628;">
-      <a href="mailto:${email}?subject=Re: ${encodeURIComponent(subject)}" target="_blank"
-        style="display:inline-block;padding:12px 28px;font-size:14px;font-weight:700;color:#F59E0B;text-decoration:none;font-family:Arial,Helvetica,sans-serif;"
-      >Reply to ${name}</a>
-    </td>
-  </tr>
-</table>`) +
-      emailFooter(),
+
+// ------------------------------------------------------------ composed emails
+const toParagraphs = (text) =>
+  String(text)
+    .split(/\n{2,}/)
+    .map((p) => p.trim())
+    .filter(Boolean)
+    .map(
+      (p) =>
+        `<p style="margin:0 0 14px;font:400 15px/1.65 ${FONT};color:#2A3646;">${esc(p).replace(/\n/g, "<br>")}</p>`,
+    )
+    .join("");
+
+/** Renders admin-written plain text inside the branded template. No HTML from the admin is ever trusted. */
+export function renderComposedEmail({ shipment, subject, message, buttonLabel = "Track shipment" }) {
+  return layout({
+    title: subject,
+    preheader: `Tracking number ${shipment.tracking_number}`,
+    inner: toParagraphs(message) + button(buttonLabel, trackingUrl(shipment)),
+  });
+}
+
+/** Sends an admin-reviewed email to one recipient. Returns { sent, failed }. */
+export async function sendComposedEmail({ to, subject, message, shipment, attachments = [], buttonLabel }) {
+  return deliver([
+    {
+      to,
+      from: FROM,
+      replyTo: config.company.supportEmail,
+      subject,
+      html: renderComposedEmail({ shipment, subject, message, buttonLabel }),
+      attachments,
+    },
+  ]);
+}
+
+export async function sendReceiptEmail(shipment, fee, pdf) {
+  const url = trackingUrl(shipment);
+  return deliver([
+    {
+      to: shipment.receiver_email,
+      from: FROM,
+      replyTo: config.company.supportEmail,
+      subject: `Payment receipt ${fee.receipt_number}: ${fee.category} (${shipment.tracking_number})`,
+      html: layout({
+        title: "We have received your payment",
+        preheader: `Receipt ${fee.receipt_number}`,
+        inner:
+          paragraph(
+            `Hello ${shipment.receiver_name}, thank you. We have received your payment for invoice ${fee.invoice_number}. Your receipt is attached.`,
+          ) +
+          detailsTable([
+            ["Receipt number", fee.receipt_number],
+            ["Invoice", fee.invoice_number],
+            ["For", fee.category],
+            ["Amount received", money(fee.total, fee.currency)],
+            ["Payment method", fee.payment_method],
+            ["Reference", fee.payment_reference],
+            ["Shipment", shipment.tracking_number],
+          ]) +
+          button("Track shipment", url),
+      }),
+      attachments: [pdfAttachment(`${fee.receipt_number}.pdf`, pdf)],
+    },
+  ]);
+}
+
+export { pdfAttachment };
+
+const sign = `Kind regards,\n${config.company.name}`;
+const dayText = (v) => fmtDay(v);
+
+export function feeEmailDefaults(shipment, fee) {
+  const lines = [`Hello ${shipment.receiver_name},`];
+  lines.push(
+    `A charge of ${money(fee.total, fee.currency)} (${fee.category}) has been added to your shipment ${shipment.tracking_number}. Invoice ${fee.invoice_number} is attached to this email.`,
   );
-
-  try {
-    await sgMail.send({
-      to: adminEmail,
-      from: { email: FROM_EMAIL, name: "Velizon Logistics" },
-      replyTo: email,
-      subject: `[Contact] ${subject} — from ${name}`,
-      html,
-    });
-  } catch (err) {
-    console.error("[email] sendContactInquiry failed:", err.message);
+  if ((fee.items || []).length > 1) {
+    lines.push(`Charges:\n${fee.items.map((i) => `- ${i.description}: ${money(i.amount, fee.currency)}`).join("\n")}`);
   }
+  if (fee.due_date) lines.push(`Payment is due by ${dayText(fee.due_date)}.`);
+  lines.push(
+    fee.payment_instructions
+      ? `Payment instructions:\n${fee.payment_instructions}`
+      : `To arrange payment, reply to this email or contact ${config.company.supportEmail}, quoting invoice number ${fee.invoice_number}.`,
+  );
+  lines.push("When we have confirmed your payment, we will send you a receipt.");
+  lines.push(sign);
+  return {
+    to: shipment.receiver_email,
+    subject: `Invoice ${fee.invoice_number}: ${fee.category} for shipment ${shipment.tracking_number}`,
+    message: lines.join("\n\n"),
+  };
 }
 
-/**
- * Fire emails to sender, receiver, and admin when a shipment is created.
- * Non-blocking — call without await from route handlers.
- */
-export async function notifyShipmentCreated(shipment) {
-  if (!process.env.SENDGRID_API_KEY) return;
-
-  const trackingUrl = `${FRONTEND_URL}/track?tracking=${shipment.tracking_number}`;
-  const adminEmail = process.env.ADMIN_EMAIL;
-  const messages = [];
-
-  if (shipment.sender_email) {
-    messages.push({
-      to: shipment.sender_email,
-      from: { email: FROM_EMAIL, name: "Velizon Logistics" },
-      subject: `Shipment registered — ${shipment.tracking_number}`,
-      html: buildSenderCreatedEmail(shipment, trackingUrl),
-    });
-  }
-
-  if (shipment.receiver_email) {
-    const receiverMsg = {
+export function noticeEmailDefaults(shipment, notice) {
+  const d = notice.data || {};
+  const lines = [`Hello ${shipment.receiver_name},`];
+  if (notice.kind === "pre_arrival") {
+    lines.push(`Your shipment ${shipment.tracking_number} is approaching its destination.`);
+    lines.push(
+      d.eta_date
+        ? `Expected arrival: ${dayText(d.eta_date)}${d.eta_window ? ` (${d.eta_window})` : ""}.`
+        : `Expected delivery: ${dayText(shipment.expected_delivery)}${d.eta_window ? ` (${d.eta_window})` : ""}.`,
+    );
+    if (Array.isArray(d.requirements) && d.requirements.length) {
+      lines.push(`Please have ready:\n${d.requirements.map((r) => `- ${r}`).join("\n")}`);
+    }
+    if (d.notes) lines.push(d.notes);
+    lines.push(`The pre-arrival notice is attached for your records.`);
+    lines.push(sign);
+    return {
       to: shipment.receiver_email,
-      from: { email: FROM_EMAIL, name: "Velizon Logistics" },
-      subject: `A shipment is on its way to you — ${shipment.tracking_number}`,
-      html: buildReceiverCreatedEmail(shipment, trackingUrl),
+      subject: `Your shipment ${shipment.tracking_number} is arriving soon`,
+      message: lines.join("\n\n"),
     };
-    // Attach QR code as a CID inline image so email clients can render it.
-    // The HTML references it as src="cid:velizon-qrcode".
-    if (shipment.qr_code) {
-      const base64Content = shipment.qr_code.replace(
-        /^data:image\/\w+;base64,/,
-        "",
-      );
-      receiverMsg.attachments = [
-        {
-          content: base64Content,
-          type: "image/png",
-          filename: "tracking-qr.png",
-          disposition: "inline",
-          content_id: "velizon-qrcode",
-        },
-      ];
-    }
-    messages.push(receiverMsg);
   }
-
-  if (adminEmail) {
-    messages.push({
-      to: adminEmail,
-      from: { email: FROM_EMAIL, name: "Velizon Logistics" },
-      subject: `[Admin] New shipment — ${shipment.tracking_number}`,
-      html: buildAdminCreatedEmail(shipment, trackingUrl),
-    });
-  }
-
-  const results = await Promise.allSettled(messages.map((m) => sgMail.send(m)));
-  results.forEach((r, i) => {
-    if (r.status === "rejected") {
-      const sgErrors = r.reason?.response?.body?.errors;
-      const detail = sgErrors ? JSON.stringify(sgErrors) : r.reason?.message;
-      console.error(`[email] Failed sending to ${messages[i].to}:`, detail);
-    }
-  });
-}
-
-/**
- * Fire emails to sender and receiver when shipment status or location changes.
- * Pass previousStatus (string | null) to show the change in the email.
- */
-export async function notifyStatusUpdate(shipment, previousStatus) {
-  if (!process.env.SENDGRID_API_KEY) return;
-
-  const trackingUrl = `${FRONTEND_URL}/track?tracking=${shipment.tracking_number}`;
-  const messages = [];
-
-  if (shipment.sender_email) {
-    messages.push({
-      to: shipment.sender_email,
-      from: { email: FROM_EMAIL, name: "Velizon Logistics" },
-      subject: `Shipment update — ${shipment.tracking_number}`,
-      html: buildStatusUpdateEmail(
-        shipment,
-        previousStatus,
-        "sender",
-        trackingUrl,
-      ),
-    });
-  }
-
-  if (shipment.receiver_email) {
-    const receiverMsg = {
-      to: shipment.receiver_email,
-      from: { email: FROM_EMAIL, name: "Velizon Logistics" },
-      subject: `Your shipment has been updated — ${shipment.tracking_number}`,
-      html: buildStatusUpdateEmail(
-        shipment,
-        previousStatus,
-        "receiver",
-        trackingUrl,
-      ),
-    };
-    if (shipment.qr_code) {
-      const base64Content = shipment.qr_code.replace(
-        /^data:image\/\w+;base64,/,
-        "",
-      );
-      receiverMsg.attachments = [
-        {
-          content: base64Content,
-          type: "image/png",
-          filename: "tracking-qr.png",
-          disposition: "inline",
-          content_id: "velizon-qrcode",
-        },
-      ];
-    }
-    messages.push(receiverMsg);
-  }
-
-  const results = await Promise.allSettled(messages.map((m) => sgMail.send(m)));
-  results.forEach((r, i) => {
-    if (r.status === "rejected") {
-      const sgErrors = r.reason?.response?.body?.errors;
-      const detail = sgErrors ? JSON.stringify(sgErrors) : r.reason?.message;
-      console.error(`[email] Failed sending to ${messages[i].to}:`, detail);
-    }
-  });
-}
-
-/**
- * Fire emails to sender, receiver, and admin when delivery is confirmed
- * with a digital signature.
- */
-export async function notifyDeliveryConfirmed(shipment, recipientName) {
-  if (!process.env.SENDGRID_API_KEY) return;
-
-  const trackingUrl = `${FRONTEND_URL}/track?tracking=${shipment.tracking_number}`;
-  const adminEmail = process.env.ADMIN_EMAIL;
-  const timestamp = new Date().toLocaleString("en-US", {
-    weekday: "long",
-    year: "numeric",
-    month: "long",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-    timeZoneName: "short",
-  });
-  const messages = [];
-
-  if (shipment.sender_email) {
-    messages.push({
-      to: shipment.sender_email,
-      from: { email: FROM_EMAIL, name: "Velizon Logistics" },
-      subject: `Delivery confirmed — ${shipment.tracking_number}`,
-      html: buildDeliveryConfirmedEmail(
-        shipment,
-        recipientName,
-        timestamp,
-        "sender",
-        trackingUrl,
-      ),
-    });
-  }
-
-  if (shipment.receiver_email) {
-    const receiverMsg = {
-      to: shipment.receiver_email,
-      from: { email: FROM_EMAIL, name: "Velizon Logistics" },
-      subject: `Your delivery has been confirmed — ${shipment.tracking_number}`,
-      html: buildDeliveryConfirmedEmail(
-        shipment,
-        recipientName,
-        timestamp,
-        "receiver",
-        trackingUrl,
-      ),
-    };
-    if (shipment.qr_code) {
-      const base64Content = shipment.qr_code.replace(
-        /^data:image\/\w+;base64,/,
-        "",
-      );
-      receiverMsg.attachments = [
-        {
-          content: base64Content,
-          type: "image/png",
-          filename: "tracking-qr.png",
-          disposition: "inline",
-          content_id: "velizon-qrcode",
-        },
-      ];
-    }
-    messages.push(receiverMsg);
-  }
-
-  if (adminEmail) {
-    messages.push({
-      to: adminEmail,
-      from: { email: FROM_EMAIL, name: "Velizon Logistics" },
-      subject: `[Admin] Delivery confirmed — ${shipment.tracking_number}`,
-      html: buildDeliveryConfirmedEmail(
-        shipment,
-        recipientName,
-        timestamp,
-        "admin",
-        trackingUrl,
-      ),
-    });
-  }
-
-  const results = await Promise.allSettled(messages.map((m) => sgMail.send(m)));
-  results.forEach((r, i) => {
-    if (r.status === "rejected") {
-      const sgErrors = r.reason?.response?.body?.errors;
-      const detail = sgErrors ? JSON.stringify(sgErrors) : r.reason?.message;
-      console.error(`[email] Failed sending to ${messages[i].to}:`, detail);
-    }
-  });
+  lines.push(`We need to let you know about an issue with your shipment ${shipment.tracking_number}.`);
+  lines.push(`Reason: ${d.reason}\n${d.details || ""}`.trim());
+  if (d.action_required) lines.push(`What we need from you:\n${d.action_required}`);
+  if (d.new_expected_delivery) lines.push(`New expected delivery date: ${dayText(d.new_expected_delivery)}.`);
+  lines.push("The delivery exception notice is attached for your records.");
+  lines.push(sign);
+  return {
+    to: shipment.receiver_email,
+    subject: `Delivery exception for shipment ${shipment.tracking_number}: ${d.reason}`,
+    message: lines.join("\n\n"),
+  };
 }
