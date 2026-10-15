@@ -2,6 +2,7 @@ import sgMail from "@sendgrid/mail";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { config } from "./config.js";
+import db from "./db.js";
 import { SHIPMENT_DOCUMENTS } from "./documents.js";
 import { trackingUrl, money } from "./pdfKit.js";
 import { documentsFor } from "./shipmentModel.js";
@@ -264,7 +265,9 @@ export async function notifyStatusUpdate(shipment, previousStatus, note) {
       ),
     });
   }
-  return deliver(messages);
+  const result = await deliver(messages);
+  await notifyFollowers(shipment).catch((err) => console.error("[email] followers failed:", err.message));
+  return result;
 }
 
 /** Proof of delivery to sender, receiver and staff after the recipient signs. */
@@ -454,3 +457,84 @@ export function noticeEmailDefaults(shipment, notice) {
     message: lines.join("\n\n"),
   };
 }
+
+// ------------------------------------------------- followers and change requests
+export const confirmUrl = (shipment, token) =>
+  `${config.frontendUrl}/track?tracking=${encodeURIComponent(shipment.tracking_number)}&confirm=${token}`;
+export const unsubscribeUrl = (shipment, token) =>
+  `${config.frontendUrl}/track?tracking=${encodeURIComponent(shipment.tracking_number)}&unsubscribe=${token}`;
+
+/** Status update for people who opted in on the tracking page: public information only, no names. */
+export async function notifyFollowers(shipment) {
+  if (!emailEnabled()) return { sent: 0, failed: 0 };
+  const followers = await db.query(
+    `SELECT email, unsubscribe_token FROM tracking_subscriptions
+      WHERE shipment_id = $1 AND confirmed_at IS NOT NULL AND unsubscribed_at IS NULL`,
+    [shipment.id],
+  );
+  const known = new Set([shipment.sender_email, shipment.receiver_email].map((v) => String(v || "").toLowerCase()));
+  const status = shipment.shipment_status;
+  const rows = [
+    ["Tracking number", shipment.tracking_number],
+    ["Status", status],
+    ["Current location", shipment.current_location],
+    ["Expected delivery", fmtDay(shipment.expected_delivery)],
+  ];
+  const messages = followers.rows
+    .filter((f) => !known.has(f.email.toLowerCase()))
+    .map((f) => ({
+      to: f.email,
+      from: FROM,
+      subject: `Shipment update: ${status} (${shipment.tracking_number})`,
+      html: layout({
+        title: `Shipment update: ${status}`,
+        preheader: `${shipment.tracking_number} is now ${status}`,
+        inner: paragraph("There is a new update on a shipment you follow.") + detailsTable(rows) + button("View tracking history", trackingUrl(shipment)),
+        note: `You receive this because you asked for updates on ${shipment.tracking_number}. To stop, open ${unsubscribeUrl(shipment, f.unsubscribe_token)}`,
+      }),
+    }));
+  return deliver(messages);
+}
+
+export async function sendSubscriptionConfirmation(shipment, email, token) {
+  return deliver([
+    {
+      to: email,
+      from: FROM,
+      subject: `Confirm email updates for ${shipment.tracking_number}`,
+      html: layout({
+        title: "Confirm your email updates",
+        preheader: `Follow shipment ${shipment.tracking_number}`,
+        inner:
+          paragraph(`Someone asked for email updates on shipment ${shipment.tracking_number} to be sent to this address. If that was you, confirm below. If not, ignore this email and nothing will be sent.`) +
+          button("Confirm email updates", confirmUrl(shipment, token)),
+      }),
+    },
+  ]);
+}
+
+export async function sendChangeRequestAlert(shipment, request) {
+  if (!config.email.adminTo) return { sent: 0, failed: 0 };
+  return deliver([
+    {
+      to: config.email.adminTo,
+      from: FROM,
+      replyTo: { email: shipment.receiver_email, name: shipment.receiver_name },
+      subject: `[Staff] Delivery change request ${request.reference} (${shipment.tracking_number})`,
+      html: layout({
+        title: "A receiver asked for a delivery change",
+        inner:
+          detailsTable([
+            ["Reference", request.reference],
+            ["Tracking number", shipment.tracking_number],
+            ["Receiver", `${shipment.receiver_name} (${shipment.receiver_email})`],
+            ["Request", request.kind_label],
+            ["Preferred date", request.preferred_date ? fmtDay(request.preferred_date) : ""],
+          ]) +
+          `<div style="margin:16px 0 4px;padding:16px;background:#F6F7F9;border:1px solid #E3E7EC;border-radius:6px;font:400 14px/1.7 ${FONT};color:#0F1B2A;white-space:pre-wrap;">${esc(request.message)}</div>` +
+          paragraph("Reply to this email to answer the receiver, then mark the request as handled in the staff console."),
+      }),
+    },
+  ]);
+}
+

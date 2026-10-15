@@ -1,4 +1,4 @@
-import express from "express";
+﻿import express from "express";
 import db from "./db.js";
 import { authenticateToken } from "./adminAuth.js";
 import { isEmail } from "./validation.js";
@@ -676,7 +676,7 @@ router.post("/:shipment_id/notices/:noticeId/send", async (req, res) => {
         await client.query(
           `INSERT INTO shipment_events (shipment_id, status, location, description, created_by)
            VALUES ($1, $2, $3, $4, $5)`,
-          [shipment.id, shipment.shipment_status, shipment.current_location, `Delivery exception: ${d.reason}`, req.admin.email],
+          [shipment.id, shipment.shipment_status, shipment.current_location, `Delivery exception: ${d.reason}${d.new_expected_delivery ? `. New expected delivery: ${d.new_expected_delivery}` : ""}`, req.admin.email],
         );
         await client.query("UPDATE shipments SET last_update = NOW() WHERE id = $1", [shipment.id]);
       }
@@ -684,6 +684,63 @@ router.post("/:shipment_id/notices/:noticeId/send", async (req, res) => {
     return rows[0];
   });
   res.json({ success: true, notice: noticeView(row, shipment) });
+});
+
+// ----------------------------------------------------------- change requests
+router.get("/change-requests", async (req, res) => {
+  const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+  const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 20));
+  const status = ["open", "handled"].includes(req.query.status) ? req.query.status : null;
+  const params = [];
+  const where = status ? (params.push(status), `WHERE r.status = $${params.length}`) : "";
+  const from = "FROM change_requests r JOIN shipments s ON s.id = r.shipment_id";
+  const [count, data, open] = await Promise.all([
+    db.query(`SELECT COUNT(*)::int AS total ${from} ${where}`, params),
+    db.query(
+      `SELECT r.*, s.shipment_id AS ship_ref, s.tracking_number, s.receiver_name, s.receiver_email, s.shipment_status
+         ${from} ${where} ORDER BY (r.status = 'open') DESC, r.id DESC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+      [...params, limit, (page - 1) * limit],
+    ),
+    db.query("SELECT COUNT(*)::int AS n FROM change_requests WHERE status = 'open'"),
+  ]);
+  const total = count.rows[0].total;
+  res.json({
+    success: true,
+    requests: data.rows.map((r) => ({
+      id: r.id,
+      reference: r.reference,
+      shipment_id: r.ship_ref,
+      tracking_number: r.tracking_number,
+      receiver_name: r.receiver_name,
+      receiver_email: r.receiver_email,
+      shipment_status: r.shipment_status,
+      kind: r.kind,
+      preferred_date: r.preferred_date,
+      message: r.message,
+      status: r.status,
+      created_at: r.created_at,
+      handled_at: r.handled_at,
+      handled_by: r.handled_by,
+      note: r.note,
+    })),
+    pagination: { page, limit, total, totalPages: Math.max(1, Math.ceil(total / limit)) },
+    open_count: open.rows[0].n,
+  });
+});
+
+router.post("/change-requests/:id/handle", async (req, res) => {
+  const id = Number.parseInt(req.params.id, 10);
+  if (!Number.isInteger(id)) return res.status(404).json({ error: "Request not found." });
+  const { rows } = await db.query(
+    `UPDATE change_requests SET status = 'handled', handled_at = NOW(), handled_by = $1, note = $2
+      WHERE id = $3 AND status = 'open' RETURNING *`,
+    [req.admin.email, text(req.body?.note, 500), id],
+  );
+  if (!rows[0]) {
+    const exists = await db.query("SELECT 1 FROM change_requests WHERE id = $1", [id]);
+    return res.status(exists.rowCount ? 409 : 404).json({ error: exists.rowCount ? "This request has already been handled." : "Request not found." });
+  }
+  res.json({ success: true, request: rows[0] });
 });
 
 export { REASONS };

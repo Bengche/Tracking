@@ -6,6 +6,7 @@ import db from "./db.js";
 import { ensureSchema } from "./schema.js";
 import shipmentRoutes from "./shipments.js";
 import billingRoutes from "./billing.js";
+import settingsRoutes from "./settings.js";
 import trackShipment from "./trackShipment.js";
 import adminAuthRoutes from "./adminAuth.js";
 import contactRoute from "./contact.js";
@@ -44,6 +45,7 @@ app.get("/health", async (req, res) => {
 
 app.use("/shipment", shipmentRoutes);
 app.use("/shipment", billingRoutes);
+app.use("/settings", settingsRoutes);
 app.use("/track", trackShipment);
 app.use("/auth", adminAuthRoutes);
 app.use("/contact", contactRoute);

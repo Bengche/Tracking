@@ -11,6 +11,7 @@ import {
   isEmail,
   STATUSES,
   CONFIRMED_STATUS,
+  OPTIONAL_COLUMNS,
 } from "./validation.js";
 import { adminShipment, documentsFor, isDeliveredStatus, publicEvent } from "./shipmentModel.js";
 import { SHIPMENT_DOCUMENTS } from "./documents.js";
@@ -128,8 +129,15 @@ router.post("/add_shipment", async (req, res) => {
         if (exists.rowCount) throw Object.assign(new Error("shipment id collision"), { code: "RETRY" });
 
         const data = { ...value, current_location: currentLocation };
-        const columns = ["tracking_number", "shipment_id", ...SHIPMENT_COLUMNS, "qr_code"];
-        const params = [trackingNumber, shipmentId, ...SHIPMENT_COLUMNS.map((c) => columnValue(c, data)), qr];
+        const optional = OPTIONAL_COLUMNS.filter((c) => data[c] !== undefined);
+        const columns = ["tracking_number", "shipment_id", ...SHIPMENT_COLUMNS, ...optional, "qr_code"];
+        const params = [
+          trackingNumber,
+          shipmentId,
+          ...SHIPMENT_COLUMNS.map((c) => columnValue(c, data)),
+          ...optional.map((c) => data[c]),
+          qr,
+        ];
         const placeholders = params.map((_, i) => `$${i + 1}`);
         const { rows } = await client.query(
           `INSERT INTO shipments (${columns.join(",")}) VALUES (${placeholders.join(",")}) RETURNING *`,
@@ -255,6 +263,7 @@ router.put("/update/:shipment_id", async (req, res) => {
         if ((c === "items" || c === "customs_category") && value[c] === undefined) continue;
         push(c, c === "current_location" ? currentLocation : columnValue(c, value));
       }
+      for (const c of OPTIONAL_COLUMNS) if (value[c] !== undefined) push(c, value[c]);
       if (value.tracking_number) push("tracking_number", value.tracking_number);
       sets.push("updated_at = NOW()");
 

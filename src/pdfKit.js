@@ -18,7 +18,7 @@ export const C = {
   red: "#A42A2A",
 };
 
-export const PAGE = { w: 595.28, h: 841.89, mx: 54, top: 64, bottom: 84 };
+export const PAGE = { w: 595.28, h: 841.89, mx: 54, top: 64, bottom: 100 };
 export const CONTENT_W = PAGE.w - PAGE.mx * 2;
 
 // ---------------------------------------------------------------- formatting
@@ -41,7 +41,9 @@ export const fmtInstant = (v) => {
 
 export const fmtDay = (v) => {
   if (!v) return "-";
-  const d = new Date(`${String(v).slice(0, 10)}T00:00:00Z`);
+  // Database timestamps arrive as Date objects; calendar dates arrive as "YYYY-MM-DD" strings.
+  const iso = v instanceof Date ? v.toISOString() : String(v);
+  const d = new Date(`${iso.slice(0, 10)}T00:00:00Z`);
   if (Number.isNaN(d.getTime())) return "-";
   return d.toLocaleDateString("en-GB", { day: "2-digit", month: "long", year: "numeric", timeZone: "UTC" });
 };
@@ -106,7 +108,7 @@ function frame(doc) {
  * Creates a PDF whose every page carries the brand watermark. A4 pages also get a classic double frame.
  * Layout is positioned explicitly (margin 0), so callers must manage page breaks with ensure().
  */
-export function createPdf({ title, number, subject, size = "A4" }) {
+export function createPdf({ title, number, subject, size = "A4", company = null }) {
   const doc = new PDFDocument({
     size,
     margin: 0,
@@ -120,7 +122,7 @@ export function createPdf({ title, number, subject, size = "A4" }) {
       Creator: config.company.name,
     },
   });
-  doc.meta = { title, number, small: size !== "A4" };
+  doc.meta = { title, number, small: size !== "A4", company };
 
   doc.on("pageAdded", () => {
     if (doc.meta.small) {
@@ -152,7 +154,9 @@ export function createPdf({ title, number, subject, size = "A4" }) {
 }
 
 /** Draws footers with page numbers on every page and closes the document. */
-export function finish(doc, { notes = [] } = {}) {
+export function finish(doc, { notes: extraNotes = [] } = {}) {
+  const legal = companyLine(doc.meta.company);
+  const notes = legal ? [...extraNotes, legal] : extraNotes;
   const range = doc.bufferedPageRange();
   for (let i = 0; i < range.count; i += 1) {
     doc.switchToPage(range.start + i);
@@ -167,7 +171,7 @@ export function finish(doc, { notes = [] } = {}) {
     });
     doc.font("Helvetica-Bold").fontSize(7.2).fillColor(C.navy);
     doc.text(
-      `${config.company.name}  |  ${config.company.supportEmail}  |  ${config.company.phone}`,
+      `${doc.meta.company?.display_name || config.company.name}  |  ${config.company.supportEmail}  |  ${config.company.phone}`,
       PAGE.mx,
       y + 2,
       { width: CONTENT_W - 80, lineBreak: false },
@@ -272,7 +276,7 @@ export function parties(doc, y, left, right) {
  * Table with a navy header, hairline rows and automatic page breaks.
  * cols: [{ key, title, width, align }], widths must add up to CONTENT_W.
  */
-export function table(doc, y, cols, rows, { fontSize = 9.2, pad = 7 } = {}) {
+export function table(doc, y, cols, rows, { fontSize = 9.2, pad = 5.5 } = {}) {
   const drawHead = (top) => {
     doc.rect(PAGE.mx, top, CONTENT_W, 22).fill(C.navy);
     let x = PAGE.mx;
@@ -324,7 +328,7 @@ export function totals(doc, y, lines, { width = 280 } = {}) {
       y += 28;
     } else {
       doc.font("Helvetica").fontSize(9.2).fillColor(C.muted);
-      doc.text(name, x + 10, y + 7, { width: width - 20, lineBreak: false });
+      doc.text(name, x + 10, y + 6, { width: width - 20, lineBreak: false });
       doc.font("Helvetica-Bold").fillColor(C.ink);
       doc.text(value, x, y + 7, { width: width - 10, align: "right", lineBreak: false });
       y += 24;
@@ -444,12 +448,87 @@ export function trackingBand(doc, y, shipment, qr) {
   label(doc, "Tracking number", PAGE.mx, y, 300);
   doc.font("Courier-Bold").fontSize(22).fillColor(C.navy);
   doc.text(shipment.tracking_number, PAGE.mx, y + 12, { width: 360, lineBreak: false });
-  barcode(doc, shipment.tracking_number, PAGE.mx, y + 44, 230, 26);
-  if (qr) doc.image(qr, PAGE.w - PAGE.mx - 82, y - 4, { width: 82, height: 82 });
-  return y + 88;
+  barcode(doc, shipment.tracking_number, PAGE.mx, y + 42, 230, 22);
+  if (qr) doc.image(qr, PAGE.w - PAGE.mx - 70, y - 4, { width: 70, height: 70 });
+  return y + 74;
 }
 
 export const documentNotes = (extra) => [
   ...(extra ? [extra] : []),
   "Generated electronically by Velizon Logistics from the shipment record.",
 ];
+
+// ------------------------------------------------------------ company/signatures
+/** One line of registered details; only what has actually been entered in the company settings. */
+export function companyLine(company) {
+  if (!company) return "";
+  const parts = [];
+  if (company.registered_address) parts.push(`Registered office: ${company.registered_address.replace(/\s*\n\s*/g, ", ")}`);
+  if (company.registration_number) parts.push(`Reg. no. ${company.registration_number}`);
+  if (company.tax_id) parts.push(`Tax ID ${company.tax_id}`);
+  return parts.join("  |  ");
+}
+
+export const imageBuffer = (dataUrl) =>
+  dataUrl ? Buffer.from(String(dataUrl).replace(/^data:image\/\w+;base64,/, ""), "base64") : null;
+
+/**
+ * Signature box: caption, the signature image above a rule (or an empty rule to sign by hand), then the
+ * signatory's name, title and date. Returns the y position below the block.
+ */
+export function signatureBlock(doc, { x, y, width = 220, heading, image, name, title, date }) {
+  doc.font("Helvetica-Bold").fontSize(6.9).fillColor(C.muted);
+  doc.text(String(heading).toUpperCase(), x, y, { width, characterSpacing: 0.9, lineBreak: false });
+  const boxTop = y + 12;
+  const boxH = 32;
+  if (image) {
+    try {
+      doc.image(image, x + 2, boxTop + 2, { fit: [width - 4, boxH - 4], align: "left", valign: "bottom" });
+    } catch {
+      // A corrupt image must not break the document; the signature line below stays for a handwritten signature.
+    }
+  }
+  const lineY = boxTop + boxH;
+  doc.moveTo(x, lineY).lineTo(x + width, lineY).lineWidth(0.7).strokeColor(C.ink).stroke();
+  let cy = lineY + 5;
+  if (name) {
+    doc.font("Helvetica-Bold").fontSize(9).fillColor(C.ink).text(name, x, cy, { width, lineBreak: false });
+    cy += 11.5;
+  }
+  if (title) {
+    doc.font("Helvetica").fontSize(8).fillColor(C.muted).text(title, x, cy, { width, lineBreak: false });
+    cy += 10.5;
+  }
+  if (date) {
+    doc.font("Helvetica").fontSize(8).fillColor(C.muted).text(`Date: ${date}`, x, cy, { width, lineBreak: false });
+    cy += 10.5;
+  }
+  return Math.max(cy, lineY + 18) + 6;
+}
+
+/** Shipper (left) and Velizon (right) signature blocks. Keeps both on the same page. */
+export function signaturePair(doc, y, { s, company, shipperHeading = "Signature of shipper", shipperDate }) {
+  y = ensure(doc, y, 100);
+  const w = CONTENT_W / 2 - 16;
+  const left = signatureBlock(doc, {
+    x: PAGE.mx,
+    y,
+    width: w,
+    heading: shipperHeading,
+    image: imageBuffer(s.sender_signature),
+    name: s.sender_signatory || s.sender_name,
+    title: s.sender_signatory_title,
+    date: s.sender_signed_at ? shipperDate(s.sender_signed_at) : null,
+  });
+  const right = signatureBlock(doc, {
+    x: PAGE.mx + CONTENT_W / 2 + 16,
+    y,
+    width: w,
+    heading: `For and on behalf of ${company.display_name}`,
+    image: imageBuffer(company.signature),
+    name: company.signatory_name,
+    title: company.signatory_title,
+    date: company.signature ? shipperDate(new Date().toISOString()) : null,
+  });
+  return Math.max(left, right);
+}

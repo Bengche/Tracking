@@ -55,6 +55,74 @@ const TEXT_FIELDS = {
 
 const clean = (v) => (typeof v === "string" ? v.trim() : v);
 
+export const INCOTERMS = ["EXW", "FCA", "CPT", "CIP", "DAP", "DPU", "DDP", "FAS", "FOB", "CFR", "CIF"];
+export const TRANSPORT_MODES = ["Air", "Sea", "Road", "Rail", "Courier"];
+export const FREIGHT_TERMS = ["Prepaid", "Collect"];
+
+// Optional paperwork fields. They are only touched when the request contains the key, so an update that
+// omits them never wipes existing data.
+const OPTIONAL_TEXT = {
+  shipper_tax_id: 60,
+  consignee_tax_id: 60,
+  port_of_loading: 120,
+  port_of_discharge: 120,
+  carrier_reference: 80,
+  payment_terms: 120,
+  handling_instructions: 400,
+  sender_signatory: 120,
+  sender_signatory_title: 120,
+};
+const OPTIONAL_ENUMS = { incoterm: INCOTERMS, mode_of_transport: TRANSPORT_MODES, freight_terms: FREIGHT_TERMS };
+const OPTIONAL_MONEY = ["freight_charges", "insurance_charges"];
+export const OPTIONAL_COLUMNS = [
+  ...Object.keys(OPTIONAL_TEXT),
+  ...Object.keys(OPTIONAL_ENUMS),
+  ...OPTIONAL_MONEY,
+  "sender_signature",
+  "sender_signed_at",
+];
+
+export const SIGNATURE_RE = /^data:image\/png;base64,[A-Za-z0-9+/=]+$/;
+export const MAX_SIGNATURE_CHARS = 560_000;
+
+function validateOptional(body, value, fields) {
+  for (const [key, max] of Object.entries(OPTIONAL_TEXT)) {
+    if (body[key] === undefined) continue;
+    const raw = clean(body[key]);
+    if (raw === null || raw === "") value[key] = null;
+    else if (typeof raw !== "string") fields[key] = "Must be text.";
+    else if (raw.length > max) fields[key] = `Must be ${max} characters or fewer.`;
+    else value[key] = raw;
+  }
+  for (const [key, allowed] of Object.entries(OPTIONAL_ENUMS)) {
+    if (body[key] === undefined) continue;
+    const raw = clean(body[key]);
+    if (raw === null || raw === "") value[key] = null;
+    else if (!allowed.includes(raw)) fields[key] = "Choose one of the listed options.";
+    else value[key] = raw;
+  }
+  for (const key of OPTIONAL_MONEY) {
+    if (body[key] === undefined) continue;
+    const raw = clean(body[key]);
+    if (raw === null || raw === "") value[key] = null;
+    else if (!Number.isFinite(Number(raw)) || Number(raw) < 0 || Number(raw) > 1e9) fields[key] = "Enter a valid amount.";
+    else value[key] = Number(raw).toFixed(2);
+  }
+  if (body.sender_signature !== undefined) {
+    const sig = body.sender_signature;
+    if (sig === null || sig === "") {
+      value.sender_signature = null;
+      value.sender_signed_at = null;
+    } else if (typeof sig !== "string" || !SIGNATURE_RE.test(sig) || sig.length > MAX_SIGNATURE_CHARS) {
+      fields.sender_signature = "The signature must be a PNG image of up to about 400 KB.";
+    } else {
+      value.sender_signature = sig;
+      value.sender_signed_at = new Date().toISOString();
+      if (!value.sender_signatory) fields.sender_signatory = "Enter the name of the person who signed.";
+    }
+  }
+}
+
 export const CUSTOMS_CATEGORIES = [
   "Sale of goods",
   "Gift",
@@ -200,6 +268,8 @@ export function validateShipment(body = {}) {
     else if (!CUSTOMS_CATEGORIES.includes(category)) fields.customs_category = "Choose one of the listed categories.";
     else value.customs_category = category;
   }
+
+  validateOptional(body, value, fields);
 
   return Object.keys(fields).length ? { fields } : { value };
 }

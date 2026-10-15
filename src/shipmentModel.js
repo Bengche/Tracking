@@ -24,8 +24,14 @@ export function documentsFor(row) {
 /** Shipment as seen by staff: everything except bulky binary-ish columns. */
 export function adminShipment(row) {
   // eslint-disable-next-line no-unused-vars
-  const { qr_code, signature_data, pod_photo, ...rest } = row;
-  return { ...rest, items: row.items || [], has_pod_photo: !!pod_photo, documents: documentsFor(row) };
+  const { qr_code, signature_data, pod_photo, sender_signature, ...rest } = row;
+  return {
+    ...rest,
+    items: row.items || [],
+    has_pod_photo: !!pod_photo,
+    has_sender_signature: !!sender_signature,
+    documents: documentsFor(row),
+  };
 }
 
 /** "Jane Smith" -> "Jane S."; single names are shortened to an initial. */
@@ -70,6 +76,8 @@ export function publicShipment(row, events = []) {
     sender_name: maskName(row.sender_name),
     receiver_name: maskName(row.receiver_name),
     is_confirmed: confirmed,
+    pod_method: row.signed_by ? row.pod_method || "signature" : null,
+    status_final: /^(delivered|returned|cancelled)/i.test(row.shipment_status || ""),
     confirmed_by: row.signed_by ? maskName(row.signed_by) : null,
     events: events.map(publicEvent),
   };

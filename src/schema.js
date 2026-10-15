@@ -60,6 +60,23 @@ export async function ensureSchema() {
   await db.query(`ALTER TABLE shipments ADD COLUMN IF NOT EXISTS pod_photo TEXT`);
   await db.query(`ALTER TABLE shipments ADD COLUMN IF NOT EXISTS pod_method TEXT`);
   await db.query(`ALTER TABLE shipments ADD COLUMN IF NOT EXISTS pod_note TEXT`);
+  for (const col of [
+    "shipper_tax_id", "consignee_tax_id", "incoterm", "mode_of_transport", "port_of_loading", "port_of_discharge",
+    "carrier_reference", "freight_terms", "payment_terms", "handling_instructions", "sender_signatory",
+    "sender_signatory_title", "sender_signature",
+  ]) {
+    await db.query(`ALTER TABLE shipments ADD COLUMN IF NOT EXISTS ${col} TEXT`);
+  }
+  await db.query(`ALTER TABLE shipments ADD COLUMN IF NOT EXISTS freight_charges NUMERIC(14,2)`);
+  await db.query(`ALTER TABLE shipments ADD COLUMN IF NOT EXISTS insurance_charges NUMERIC(14,2)`);
+  await db.query(`ALTER TABLE shipments ADD COLUMN IF NOT EXISTS sender_signed_at TIMESTAMPTZ`);
+
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS settings (
+      key TEXT PRIMARY KEY,
+      value JSONB NOT NULL DEFAULT '{}'::jsonb,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`);
   await db.query(
     `UPDATE shipments SET pod_method = 'signature' WHERE pod_method IS NULL AND signature_data IS NOT NULL`,
   );
@@ -111,6 +128,44 @@ export async function ensureSchema() {
       sent_to TEXT
     )`);
   await db.query(`CREATE INDEX IF NOT EXISTS shipment_notices_shipment_idx ON shipment_notices (shipment_id)`);
+
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS geocache (
+      query TEXT PRIMARY KEY,
+      lat DOUBLE PRECISION,
+      lng DOUBLE PRECISION,
+      found BOOLEAN NOT NULL DEFAULT false,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`);
+
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS tracking_subscriptions (
+      id SERIAL PRIMARY KEY,
+      shipment_id INTEGER NOT NULL,
+      email TEXT NOT NULL,
+      confirm_token TEXT UNIQUE NOT NULL,
+      unsubscribe_token TEXT UNIQUE NOT NULL,
+      confirmed_at TIMESTAMPTZ,
+      unsubscribed_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (shipment_id, email)
+    )`);
+
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS change_requests (
+      id SERIAL PRIMARY KEY,
+      reference TEXT UNIQUE,
+      shipment_id INTEGER NOT NULL,
+      kind TEXT NOT NULL,
+      preferred_date DATE,
+      message TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'open',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      handled_at TIMESTAMPTZ,
+      handled_by TEXT,
+      note TEXT
+    )`);
+  await db.query(`CREATE INDEX IF NOT EXISTS change_requests_status_idx ON change_requests (status)`);
 
   // Store instants with a time zone so they render correctly for every visitor.
   for (const column of ["created_at", "updated_at", "last_update"]) {

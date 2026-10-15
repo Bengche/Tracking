@@ -16,7 +16,7 @@ import {
   totals,
   paragraph,
   callout,
-  signatureLine,
+  signaturePair,
   verification,
   qrBuffer,
   barcode,
@@ -34,6 +34,7 @@ import {
 import { config } from "./config.js";
 import { isInternational } from "./shipmentModel.js";
 import { CUSTOMS_CATEGORIES } from "./validation.js";
+import { loadCompany } from "./settings.js";
 
 /** Itemised goods, falling back to the free-text contents when no items were entered. */
 export function itemsOf(s) {
@@ -47,7 +48,21 @@ const sumQuantity = (items) => {
   return q.length === items.length && q.length > 0 ? q.reduce((a, b) => a + b, 0) : null;
 };
 
-const shipper = (s) => ({
+
+
+const routeText = (s) => `${place(s.origin_location, s.origin_country)}  to  ${place(s.destination_location, s.destination_country)}`;
+
+// ------------------------------------------------------------------ helpers
+const taxLine = (id) => (id ? { text: `Tax ID: ${id}` } : { text: "" });
+const hasValue = (v) => v !== undefined && v !== null && String(v).trim() !== "";
+
+/** A row of fields that only prints the cells that have data; skipped entirely when none do. */
+function fieldRowIf(doc, y, cells, opts) {
+  const present = cells.filter(([, v]) => hasValue(v));
+  return present.length ? fieldRow(doc, y, present, opts) : y;
+}
+
+const shipperParty = (s) => ({
   heading: "Shipper",
   lines: [
     { text: s.sender_name, bold: true },
@@ -55,10 +70,11 @@ const shipper = (s) => ({
     { text: place(s.origin_location, s.origin_country) },
     { text: s.sender_email },
     { text: s.sender_phone },
+    taxLine(s.shipper_tax_id),
   ],
 });
 
-const consignee = (s) => ({
+const consigneeParty = (s) => ({
   heading: "Consignee",
   lines: [
     { text: s.receiver_name, bold: true },
@@ -66,61 +82,108 @@ const consignee = (s) => ({
     { text: place(s.destination_location, s.destination_country) },
     { text: s.receiver_email },
     { text: s.receiver_phone },
+    taxLine(s.consignee_tax_id),
   ],
 });
 
-const routeText = (s) => `${place(s.origin_location, s.origin_country)}  to  ${place(s.destination_location, s.destination_country)}`;
+const goodsSummary = (items) =>
+  items.map((i) => (Number.isFinite(Number(i.quantity)) && i.quantity ? `${i.quantity} x ${i.description}` : i.description)).join("\n");
+
+const sumGoods = (items) => items.reduce((a, i) => a + Number(i.unit_value) * Number(i.quantity || 1), 0);
+
+const toNumber = (v) => (hasValue(v) && Number.isFinite(Number(v)) ? Number(v) : null);
 
 // ------------------------------------------------------------------ waybill
 export async function buildWaybill(s) {
   const number = s.tracking_number;
-  const { doc, done } = createPdf({ title: "Shipping waybill", number, subject: "Shipping waybill" });
+  const company = await loadCompany();
+  const { doc, done } = createPdf({ title: "Shipping waybill", number, subject: "Shipping waybill", company });
   const qr = qrBuffer(s);
   let y = header(doc, { title: "Shipping waybill", number, issued: fmtDay(s.created_at) });
 
   y = trackingBand(doc, y, s, qr);
   rule(doc, y);
-  y = parties(doc, y + 14, shipper(s), consignee(s));
+  y = parties(doc, y + 14, shipperParty(s), consigneeParty(s));
   rule(doc, y);
 
-  y = sectionTitle(doc, "Shipment particulars", y + 14);
+  y = sectionTitle(doc, "Carriage details", y + 14);
   y = fieldRow(doc, y, [
-    ["Origin", place(s.origin_location, s.origin_country), { bold: true }],
-    ["Destination", place(s.destination_location, s.destination_country), { bold: true }],
+    ["Place of receipt", place(s.origin_location, s.origin_country), { bold: true }],
+    ["Place of delivery", place(s.destination_location, s.destination_country), { bold: true }],
     ["Service", s.shipment_type || "Standard", { bold: true }],
     ["Expected delivery", fmtDay(s.expected_delivery), { bold: true }],
   ]);
-  y = fieldRow(doc, y, [
-    ["Pieces", s.pieces],
-    ["Weight", s.weight],
-    ["Dimensions", s.dimensions],
-    ["Status at issue", s.shipment_status],
+  y = fieldRowIf(doc, y, [
+    ["Mode of transport", s.mode_of_transport],
+    ["Port of loading", s.port_of_loading],
+    ["Port of discharge", s.port_of_discharge],
+    ["Carrier reference", s.carrier_reference],
   ]);
-  y = field(doc, "Description of contents", s.contents, PAGE.mx, y, CONTENT_W);
-  if (Number(s.declared_value) > 0) {
-    y = field(doc, "Declared value", money(s.declared_value, s.currency), PAGE.mx, y, CONTENT_W, { bold: true });
-  }
-  if (s.remarks) y = field(doc, "Remarks", s.remarks, PAGE.mx, y, CONTENT_W);
+  y = fieldRowIf(doc, y, [
+    ["Incoterm", s.incoterm],
+    ["Freight terms", s.freight_terms],
+    ["Payment terms", s.payment_terms],
+  ]);
 
-  y = ensure(doc, y + 6, 150);
+  y = sectionTitle(doc, "Particulars of goods", y + 2);
+  const items = itemsOf(s);
+  y = table(
+    doc,
+    y,
+    [
+      { key: "pieces", title: "Pieces", width: 56, align: "right" },
+      { key: "description", title: "Description of goods", width: CONTENT_W - 56 - 100 - 116 },
+      { key: "weight", title: "Gross weight", width: 100, align: "right" },
+      { key: "dimensions", title: "Dimensions", width: 116, align: "right" },
+    ],
+    [
+      {
+        pieces: s.pieces,
+        description: items.length ? goodsSummary(items) : s.contents,
+        weight: s.weight,
+        dimensions: s.dimensions,
+      },
+    ],
+  );
+  y += 10;
+  const declared = toNumber(s.declared_value);
+  y = fieldRowIf(doc, y, [
+    ["Declared value for customs", declared > 0 ? money(declared, s.currency) : null, { bold: true }],
+    ["Customs category", s.customs_category],
+  ]);
+  if (hasValue(s.handling_instructions)) y = field(doc, "Handling instructions", s.handling_instructions, PAGE.mx, y, CONTENT_W);
+  if (hasValue(s.remarks)) y = field(doc, "Remarks", s.remarks, PAGE.mx, y, CONTENT_W);
+
+  const freight = toNumber(s.freight_charges);
+  const insurance = toNumber(s.insurance_charges);
+  if (freight || insurance) {
+    y = fieldRowIf(doc, y, [
+      ["Freight charges", freight ? `${money(freight, s.currency)}${s.freight_terms ? ` (${s.freight_terms.toLowerCase()})` : ""}` : null],
+      ["Insurance charges", insurance ? money(insurance, s.currency) : null],
+      ["Total charges", money((freight || 0) + (insurance || 0), s.currency), { bold: true }],
+    ]);
+  }
+
+  y = ensure(doc, y, 140);
   y = paragraph(
     doc,
-    "The shipper confirms that the particulars above are correct and that the shipment contains no prohibited or restricted articles. Carriage is subject to the Terms of Service published at " +
+    "The shipper certifies that the particulars above are correct and that the shipment contains no prohibited or restricted articles. Carriage is subject to the Terms of Service published at " +
       `${config.frontendUrl}/terms.`,
-    y,
-    { size: 8.6, color: C.muted },
+    y + 12,
+    { size: 8.4, color: C.muted },
   );
-  y = signatureLine(doc, y + 22, "Issued electronically for and on behalf of Velizon Logistics");
-  verification(doc, y + 6, s, qr);
+  y = signaturePair(doc, y + 8, { s, company, shipperDate: fmtDay });
+  verification(doc, y + 2, s, qr, { optional: true });
 
-  finish(doc, { notes: documentNotes("Valid without a handwritten signature. Reference: waybill " + number) });
+  finish(doc, { notes: documentNotes("Reference: waybill " + number) });
   return done;
 }
 
 // --------------------------------------------------------- commercial invoice
 export async function buildInvoice(s) {
   const number = `CI-${s.tracking_number}`;
-  const { doc, done } = createPdf({ title: "Commercial invoice", number, subject: "Commercial invoice" });
+  const company = await loadCompany();
+  const { doc, done } = createPdf({ title: "Commercial invoice", number, subject: "Commercial invoice", company });
   const qr = qrBuffer(s);
   let y = header(doc, { title: "Commercial invoice", number, issued: fmtDay(new Date().toISOString()) });
 
@@ -129,12 +192,18 @@ export async function buildInvoice(s) {
     ["Shipment reference", s.tracking_number, { bold: true, mono: true }],
     ["Currency", s.currency || "USD", { bold: true }],
   ]);
+  y = fieldRowIf(doc, y, [
+    ["Incoterm", s.incoterm, { bold: true }],
+    ["Reason for export", s.customs_category],
+    ["Terms of payment", s.payment_terms],
+    ["Mode of transport", s.mode_of_transport],
+  ]);
   rule(doc, y);
   y = parties(
     doc,
     y + 14,
-    { ...shipper(s), heading: "Exporter / shipper" },
-    { ...consignee(s), heading: "Consignee / importer" },
+    { ...shipperParty(s), heading: "Exporter / shipper" },
+    { ...consigneeParty(s), heading: "Consignee / importer" },
   );
   rule(doc, y);
   y = fieldRow(doc, y + 14, [
@@ -146,21 +215,35 @@ export async function buildInvoice(s) {
   y = sectionTitle(doc, "Goods", y + 4);
   const items = itemsOf(s);
   const priced = items.length > 0 && items.every((i) => Number.isFinite(Number(i.unit_value)));
-  let rows;
   let cols;
+  let rows;
+  let goodsTotal;
   if (priced) {
-    cols = [
-      { key: "description", title: "Description of goods", width: CONTENT_W - 300 },
-      { key: "quantity", title: "Qty", width: 50, align: "right" },
-      { key: "unit", title: "Unit value", width: 100, align: "right" },
-      { key: "total", title: "Line total", width: 150, align: "right" },
-    ];
+    const showCodes = items.some((i) => hasValue(i.hs_code) || hasValue(i.origin_country));
+    cols = showCodes
+      ? [
+          { key: "description", title: "Description of goods", width: CONTENT_W - 330 },
+          { key: "hs", title: "Tariff no.", width: 64 },
+          { key: "origin", title: "Origin", width: 62 },
+          { key: "quantity", title: "Qty", width: 34, align: "right" },
+          { key: "unit", title: "Unit value", width: 78, align: "right" },
+          { key: "total", title: "Total", width: 92, align: "right" },
+        ]
+      : [
+          { key: "description", title: "Description of goods", width: CONTENT_W - 240 },
+          { key: "quantity", title: "Qty", width: 40, align: "right" },
+          { key: "unit", title: "Unit value", width: 90, align: "right" },
+          { key: "total", title: "Line total", width: 110, align: "right" },
+        ];
     rows = items.map((i) => ({
       description: i.description,
+      hs: i.hs_code,
+      origin: i.origin_country,
       quantity: i.quantity,
       unit: money(i.unit_value, s.currency),
       total: money(Number(i.unit_value) * Number(i.quantity || 1), s.currency),
     }));
+    goodsTotal = sumGoods(items);
   } else {
     cols = [
       { key: "description", title: "Description of goods", width: CONTENT_W - 260 },
@@ -168,28 +251,35 @@ export async function buildInvoice(s) {
       { key: "weight", title: "Weight", width: 80, align: "right" },
       { key: "total", title: "Total value", width: 90, align: "right" },
     ];
+    goodsTotal = toNumber(s.declared_value) ?? 0;
     rows = [
       {
         description: items.map((i) => i.description).join("; ") || "General merchandise",
         quantity: sumQuantity(items) ?? s.pieces,
         weight: s.weight,
-        total: money(s.declared_value, s.currency),
+        total: money(goodsTotal, s.currency),
       },
     ];
   }
   y = table(doc, y, cols, rows);
-  y = totals(doc, y + 14, [
-    { name: "Total declared value", value: money(s.declared_value, s.currency), strong: true },
-  ]);
 
+  const freight = toNumber(s.freight_charges);
+  const insurance = toNumber(s.insurance_charges);
+  const lines = [{ name: "Value of goods", value: money(goodsTotal, s.currency) }];
+  if (freight) lines.push({ name: "Freight charges", value: money(freight, s.currency) });
+  if (insurance) lines.push({ name: "Insurance charges", value: money(insurance, s.currency) });
+  lines.push({ name: "Total invoice value", value: money(goodsTotal + (freight || 0) + (insurance || 0), s.currency), strong: true });
+  y = totals(doc, y + 8, lines);
+
+  y = ensure(doc, y, 140);
   y = paragraph(
     doc,
-    "The shipper declares that the information on this invoice is true and correct, that the goods are described accurately and that the value shown is the declared value for customs purposes. Duties and taxes, where applicable, are determined by the customs authority of the destination country.",
-    y + 18,
-    { size: 8.8 },
+    "The shipper declares that the information on this invoice is true and correct, that the goods are described accurately and that the values shown are the values for customs purposes. Duties and taxes, where applicable, are determined by the customs authority of the destination country.",
+    y + 10,
+    { size: 8.6 },
   );
-  y = signatureLine(doc, ensure(doc, y + 26, 60) + 0, `Declared by ${s.sender_name}`);
-  verification(doc, y + 6, s, qr);
+  y = signaturePair(doc, y + 6, { s, company, shipperHeading: "Declared and signed by the shipper", shipperDate: fmtDay });
+  verification(doc, y + 2, s, qr, { optional: true });
 
   finish(doc, { notes: documentNotes("Values are as supplied by the shipper. Reference: " + number) });
   return done;
@@ -198,7 +288,8 @@ export async function buildInvoice(s) {
 // --------------------------------------------------------------- packing list
 export async function buildPackingList(s) {
   const number = `PL-${s.tracking_number}`;
-  const { doc, done } = createPdf({ title: "Packing list", number, subject: "Packing list" });
+  const company = await loadCompany();
+  const { doc, done } = createPdf({ title: "Packing list", number, subject: "Packing list", company });
   const qr = qrBuffer(s);
   let y = header(doc, { title: "Packing list", number, issued: fmtDay(new Date().toISOString()) });
 
@@ -208,18 +299,11 @@ export async function buildPackingList(s) {
     ["Route", routeText(s), { bold: true }],
   ]);
   rule(doc, y);
-  y = parties(doc, y + 14, shipper(s), consignee(s));
+  y = parties(doc, y + 14, shipperParty(s), consigneeParty(s));
   rule(doc, y);
 
   y = sectionTitle(doc, "Contents", y + 14);
   const items = itemsOf(s);
-  const rows = items.map((i, idx) => ({
-    no: idx + 1,
-    description: i.description,
-    quantity: i.quantity,
-    weight: i.weight,
-    origin: i.origin_country,
-  }));
   y = table(
     doc,
     y,
@@ -230,7 +314,7 @@ export async function buildPackingList(s) {
       { key: "weight", title: "Weight", width: 80, align: "right" },
       { key: "origin", title: "Origin", width: 90 },
     ],
-    rows,
+    items.map((i, idx) => ({ no: idx + 1, description: i.description, quantity: i.quantity, weight: i.weight, origin: i.origin_country })),
   );
 
   y = totals(doc, y + 14, [
@@ -239,9 +323,9 @@ export async function buildPackingList(s) {
     { name: "Gross weight", value: txt(s.weight) },
     { name: "Dimensions", value: txt(s.dimensions) },
   ]);
-  y = ensure(doc, y + 20, 100);
-  y = signatureLine(doc, y + 20, `Packed and checked by ${s.sender_name}`);
-  verification(doc, y + 6, s, qr);
+  if (hasValue(s.handling_instructions)) y = field(doc, "Handling instructions", s.handling_instructions, PAGE.mx, ensure(doc, y + 12, 40), CONTENT_W);
+  y = signaturePair(doc, y + 14, { s, company, shipperHeading: "Packed and checked by the shipper", shipperDate: fmtDay });
+  verification(doc, y + 2, s, qr, { optional: true });
 
   finish(doc, { notes: documentNotes("Quantities and weights are as supplied by the shipper. Reference: " + number) });
   return done;
@@ -250,7 +334,8 @@ export async function buildPackingList(s) {
 // ------------------------------------------------------ customs declaration
 export async function buildCustomsDeclaration(s) {
   const number = `CD-${s.tracking_number}`;
-  const { doc, done } = createPdf({ title: "Customs declaration", number, subject: "Customs declaration" });
+  const company = await loadCompany();
+  const { doc, done } = createPdf({ title: "Customs declaration", number, subject: "Customs declaration", company });
   const qr = qrBuffer(s);
   let y = header(doc, { title: "Customs declaration", number, issued: fmtDay(new Date().toISOString()) });
 
@@ -259,21 +344,22 @@ export async function buildCustomsDeclaration(s) {
     ["Country of dispatch", s.origin_country, { bold: true }],
     ["Country of destination", s.destination_country, { bold: true }],
   ]);
+  y = fieldRowIf(doc, y, [
+    ["Incoterm", s.incoterm],
+    ["Mode of transport", s.mode_of_transport],
+    ["Port of loading", s.port_of_loading],
+    ["Port of discharge", s.port_of_discharge],
+  ]);
   rule(doc, y);
-  y = parties(
-    doc,
-    y + 14,
-    { ...shipper(s), heading: "Sender" },
-    { ...consignee(s), heading: "Addressee" },
-  );
+  y = parties(doc, y + 14, { ...shipperParty(s), heading: "Sender" }, { ...consigneeParty(s), heading: "Addressee" });
   rule(doc, y);
 
   y = sectionTitle(doc, "Category of shipment", y + 14);
-  const cols4 = 3;
-  const cw = CONTENT_W / cols4;
+  const perRow = 3;
+  const cw = CONTENT_W / perRow;
   CUSTOMS_CATEGORIES.forEach((name, i) => {
-    const cx = PAGE.mx + (i % cols4) * cw;
-    const cy = y + Math.floor(i / cols4) * 20;
+    const cx = PAGE.mx + (i % perRow) * cw;
+    const cy = y + Math.floor(i / perRow) * 20;
     doc.lineWidth(0.8).strokeColor(C.navy).rect(cx, cy, 10, 10).stroke();
     if (s.customs_category === name) {
       doc.lineWidth(1.6).strokeColor(C.navy).moveTo(cx + 2, cy + 5).lineTo(cx + 4.5, cy + 8).lineTo(cx + 8.5, cy + 2).stroke();
@@ -285,14 +371,6 @@ export async function buildCustomsDeclaration(s) {
 
   y = sectionTitle(doc, "Declared goods", y + 4);
   const items = itemsOf(s);
-  const rows = items.map((i) => ({
-    description: i.description,
-    quantity: i.quantity,
-    weight: i.weight,
-    value: Number.isFinite(Number(i.unit_value)) ? money(Number(i.unit_value) * Number(i.quantity || 1), s.currency) : "-",
-    hs: i.hs_code,
-    origin: i.origin_country,
-  }));
   y = table(
     doc,
     y,
@@ -304,28 +382,30 @@ export async function buildCustomsDeclaration(s) {
       { key: "hs", title: "Tariff no.", width: 70 },
       { key: "origin", title: "Origin", width: 70 },
     ],
-    rows,
+    items.map((i) => ({
+      description: i.description,
+      quantity: i.quantity,
+      weight: i.weight,
+      value: Number.isFinite(Number(i.unit_value)) ? money(Number(i.unit_value) * Number(i.quantity || 1), s.currency) : "-",
+      hs: i.hs_code,
+      origin: i.origin_country,
+    })),
     { fontSize: 8.8 },
   );
   y = totals(doc, y + 14, [
-    { name: "Total weight", value: txt(s.weight) },
+    { name: "Gross weight", value: txt(s.weight) },
     { name: "Total declared value", value: money(s.declared_value, s.currency), strong: true },
   ]);
 
+  y = ensure(doc, y, 140);
   y = paragraph(
     doc,
     "I, the undersigned sender, certify that the particulars given in this declaration are correct and that this item does not contain any dangerous article or any article prohibited by legislation or by postal or customs regulations.",
-    y + 18,
-    { size: 8.8 },
+    y + 10,
+    { size: 8.6 },
   );
-  y = ensure(doc, y + 20, 70);
-  signatureLine(doc, y + 18, `Sender: ${s.sender_name}`, { width: 230 });
-  label(doc, "Date", PAGE.mx + 280, y - 2, 100);
-  doc.font("Helvetica").fontSize(9.6).fillColor(C.ink).text(fmtDay(new Date().toISOString()), PAGE.mx + 280, y + 8, {
-    width: 200,
-    lineBreak: false,
-  });
-  verification(doc, y + 34, s, qr, { optional: true });
+  y = signaturePair(doc, y + 6, { s, company, shipperHeading: "Signature of sender", shipperDate: fmtDay });
+  verification(doc, y + 2, s, qr, { optional: true });
 
   finish(doc, {
     notes: documentNotes("Prepared by Velizon Logistics from information supplied by the sender, who is responsible for its accuracy."),

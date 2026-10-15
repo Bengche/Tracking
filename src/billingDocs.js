@@ -1,4 +1,4 @@
-import {
+﻿import {
   C,
   PAGE,
   CONTENT_W,
@@ -24,17 +24,38 @@ import {
   money,
   fmtDay,
   fmtInstant,
+  signatureBlock,
+  imageBuffer,
 } from "./pdfKit.js";
 import { config } from "./config.js";
+import { loadCompany } from "./settings.js";
 
-const issuer = {
+const issuerParty = (company) => ({
   heading: "From",
   lines: [
-    { text: config.company.name, bold: true },
+    { text: company.display_name, bold: true },
+    { text: company.registered_address },
+    { text: company.registration_number ? `Reg. no. ${company.registration_number}` : "" },
+    { text: company.tax_id ? `Tax ID: ${company.tax_id}` : "" },
     { text: config.company.supportEmail },
     { text: config.company.phone },
   ],
-};
+});
+
+/** Velizon's authorised signature, placed at the foot of the document. */
+function companySignature(doc, y, company, heading = "Authorised signature") {
+  y = ensure(doc, y + 6, 100);
+  return signatureBlock(doc, {
+    x: PAGE.mx,
+    y,
+    width: 230,
+    heading: `${heading} - ${company.display_name}`,
+    image: imageBuffer(company.signature),
+    name: company.signatory_name,
+    title: company.signatory_title,
+    date: company.signature ? fmtDay(new Date().toISOString()) : null,
+  });
+}
 
 const billTo = (s) => ({
   heading: "Billed to",
@@ -56,7 +77,9 @@ function shipmentReference(doc, y, s) {
 
 // --------------------------------------------------------------- fee invoice
 export async function buildFeeInvoice(s, fee) {
+  const company = await loadCompany();
   const { doc, done } = createPdf({
+    company,
     title: "Invoice",
     number: fee.invoice_number || "DRAFT",
     subject: `Invoice for shipment ${s.tracking_number}`,
@@ -72,7 +95,7 @@ export async function buildFeeInvoice(s, fee) {
     ["Currency", fee.currency, { bold: true }],
   ]);
   rule(doc, y);
-  y = parties(doc, y + 14, issuer, billTo(s));
+  y = parties(doc, y + 14, issuerParty(company), billTo(s));
   rule(doc, y);
   y = shipmentReference(doc, y + 14, s);
 
@@ -124,7 +147,8 @@ export async function buildFeeInvoice(s, fee) {
     color: C.muted,
   });
 
-  verification(doc, y + 8, s, qr, { optional: true });
+  y = companySignature(doc, y, company);
+  verification(doc, y + 2, s, qr, { optional: true });
 
   finish(doc, {
     notes: documentNotes(fee.status === "draft" ? "DRAFT: not yet issued." : `Invoice ${fee.invoice_number}`),
@@ -134,7 +158,9 @@ export async function buildFeeInvoice(s, fee) {
 
 // ------------------------------------------------------------------- receipt
 export async function buildReceipt(s, fee) {
+  const company = await loadCompany();
   const { doc, done } = createPdf({
+    company,
     title: "Payment receipt",
     number: fee.receipt_number,
     subject: `Receipt for invoice ${fee.invoice_number}`,
@@ -152,7 +178,7 @@ export async function buildReceipt(s, fee) {
     doc,
     y + 14,
     { heading: "Received from", lines: billTo(s).lines },
-    { heading: "Received by", lines: issuer.lines },
+    { heading: "Received by", lines: issuerParty(company).lines },
   );
   rule(doc, y);
   y = shipmentReference(doc, y + 14, s);
@@ -180,7 +206,8 @@ export async function buildReceipt(s, fee) {
   stamp(doc, "PAID IN FULL", PAGE.mx + 4, y + 2);
   y += 70;
   y = paragraph(doc, "Thank you. This receipt confirms that the payment above has been received in full.", y, { size: 9.6 });
-  verification(doc, y + 6, s, qr, { optional: true });
+  y = companySignature(doc, y, company);
+  verification(doc, y + 2, s, qr, { optional: true });
 
   finish(doc, { notes: documentNotes(`Receipt ${fee.receipt_number} for invoice ${fee.invoice_number}`) });
   return done;
@@ -188,8 +215,10 @@ export async function buildReceipt(s, fee) {
 
 // -------------------------------------------------------------------- notices
 export async function buildPreArrivalNotice(s, notice) {
+  const company = await loadCompany();
   const d = notice.data || {};
   const { doc, done } = createPdf({
+    company,
     title: "Pre-arrival notice",
     number: notice.reference_number,
     subject: `Pre-arrival notice for shipment ${s.tracking_number}`,
@@ -250,15 +279,18 @@ export async function buildPreArrivalNotice(s, notice) {
     y + 4,
     { size: 9, color: C.muted },
   );
-  verification(doc, y + 6, s, qr, { optional: true });
+  y = companySignature(doc, y, company);
+  verification(doc, y + 2, s, qr, { optional: true });
 
   finish(doc, { notes: documentNotes(`Reference ${notice.reference_number}`) });
   return done;
 }
 
 export async function buildExceptionNotice(s, notice) {
+  const company = await loadCompany();
   const d = notice.data || {};
   const { doc, done } = createPdf({
+    company,
     title: "Delivery exception notice",
     number: notice.reference_number,
     subject: `Delivery exception for shipment ${s.tracking_number}`,
@@ -312,7 +344,8 @@ export async function buildExceptionNotice(s, notice) {
     y,
     { size: 9, color: C.muted },
   );
-  verification(doc, y + 6, s, qr, { optional: true });
+  y = companySignature(doc, y, company);
+  verification(doc, y + 2, s, qr, { optional: true });
 
   finish(doc, { notes: documentNotes(`Reference ${notice.reference_number}`) });
   return done;
