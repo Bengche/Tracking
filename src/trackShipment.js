@@ -50,37 +50,41 @@ router.get("/route/:trackingNumber", routeLimiter, async (req, res) => {
   const s = await findShipment(req.params.trackingNumber);
   if (!s) return res.status(404).json({ error: "Shipment not found" });
 
-  const events = await db.query(
-    "SELECT status, location, occurred_at FROM shipment_events WHERE shipment_id = $1 ORDER BY occurred_at ASC, id ASC",
+  // The map shows exactly three places: where it started, where it is now, and where it is going.
+  // When two coincide (for example a delivered shipment) they share one marker and carry both labels.
+  const latestEvent = await db.query(
+    "SELECT location FROM shipment_events WHERE shipment_id = $1 AND location IS NOT NULL AND location <> '' ORDER BY occurred_at DESC, id DESC LIMIT 1",
     [s.id],
   );
+  const join = (...parts) => parts.filter((p) => p && String(p).trim()).join(", ");
+  const candidates = [
+    { kind: "origin", label: join(s.origin_location, s.origin_country), status: null, occurred_at: s.created_at },
+    {
+      kind: "current",
+      label: String(s.current_location || latestEvent.rows[0]?.location || "").trim(),
+      status: s.shipment_status,
+      occurred_at: s.last_update,
+    },
+    { kind: "destination", label: join(s.destination_location, s.destination_country), status: null, occurred_at: null },
+  ].filter((c) => c.label);
 
-  const raw = [];
-  const push = (label, kind, status = null, occurredAt = null) => {
-    const text = String(label || "").trim();
-    if (text) raw.push({ label: text, kind, status, occurred_at: occurredAt });
-  };
-  push([s.origin_location, s.origin_country].filter(Boolean).join(", "), "origin", null, s.created_at);
-  events.rows.forEach((e) => push(e.location, "event", e.status, e.occurred_at));
-  push(s.current_location, "current", s.shipment_status, s.last_update);
-  push([s.destination_location, s.destination_country].filter(Boolean).join(", "), "destination");
-
-  // Merge consecutive duplicates; the later entry wins so "current" and "destination" keep their meaning.
   const merged = [];
-  for (const stop of raw) {
-    const last = merged[merged.length - 1];
-    if (last && norm(last.label) === norm(stop.label)) {
-      merged[merged.length - 1] = { ...last, ...stop, kind: stop.kind === "event" ? last.kind : stop.kind };
-    } else merged.push(stop);
+  for (const c of candidates) {
+    const same = merged.find((m) => norm(m.label) === norm(c.label));
+    if (same) {
+      same.kinds.push(c.kind);
+      if (c.status) same.status = c.status;
+      if (c.occurred_at && !same.occurred_at) same.occurred_at = c.occurred_at;
+    } else merged.push({ ...c, kinds: [c.kind] });
   }
 
   const stops = [];
-  for (const stop of merged.slice(0, 14)) {
+  for (const stop of merged) {
     // Retry with progressively less specific text, e.g. "Lekki, Lagos, Nigeria" -> "Lagos, Nigeria".
     const parts = stop.label.split(",").map((p) => p.trim()).filter(Boolean);
     let point = null;
     for (let i = 0; i < Math.min(parts.length, 3) && !point; i += 1) point = await geocode(parts.slice(i).join(", "));
-    if (point) stops.push({ ...stop, lat: point.lat, lng: point.lng });
+    if (point) stops.push({ ...stop, kind: stop.kinds[stop.kinds.length - 1], lat: point.lat, lng: point.lng });
   }
 
   res.set("Cache-Control", "public, max-age=300");
