@@ -94,7 +94,7 @@ function layout({ preheader, title, inner, note }) {
     <tr><td style="padding:20px 4px 0;font:400 12px/1.7 ${FONT};color:#7B8696;">
       ${note ? `${esc(note)}<br>` : ""}
       Questions? Reply to this email or contact <a href="mailto:${esc(config.company.supportEmail)}" style="color:#1B4469;">${esc(config.company.supportEmail)}</a>.<br>
-      &copy; ${new Date().getFullYear()} ${esc(config.company.name)}
+      &copy; ${new Date().getFullYear()} ${esc(config.company.name)}${config.company.address ? `<br>${esc(config.company.address)}` : ""}
     </td></tr>
   </table>
 </td></tr></table></body></html>`;

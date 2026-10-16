@@ -34,6 +34,7 @@ export const config = {
   company: {
     name: "Velizon Logistics",
     brand: "Velizon",
+    address: process.env.COMPANY_ADDRESS || "1 World Way, Los Angeles, CA 90045, USA",
     supportEmail: process.env.SUPPORT_EMAIL || "support@velizon.com",
     phone: process.env.SUPPORT_PHONE || "+1 (315) 202-9671",
   },

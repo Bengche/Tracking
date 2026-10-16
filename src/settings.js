@@ -30,6 +30,8 @@ export async function loadCompany() {
   const { rows } = await db.query("SELECT value FROM settings WHERE key = 'company'");
   const stored = rows[0]?.value || {};
   const company = { ...EMPTY, ...stored };
+  // Until an address is saved in the staff console, use the configured company address.
+  if (!company.registered_address) company.registered_address = config.company.address || null;
   return {
     ...company,
     // The legal name falls back to the configured trading name so documents always carry an issuer.
