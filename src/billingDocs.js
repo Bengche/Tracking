@@ -1,4 +1,4 @@
-﻿import {
+import {
   C,
   PAGE,
   CONTENT_W,
@@ -7,7 +7,7 @@
   header,
   ensure,
   field,
-  fieldRow,
+  label,  fieldRow,
   parties,
   sectionTitle,
   rule,
@@ -110,19 +110,19 @@ export async function buildFeeInvoice(s, fee) {
     ],
     rows,
   );
-  const tableEnd = y;
-  if (fee.status === "paid") {
-    stamp(doc, "PAID", PAGE.mx + 8, tableEnd + 22);
-    doc.font("Helvetica").fontSize(8.6).fillColor(C.muted);
-    doc.text(`Payment received ${fmtDay(fee.received_on || fee.paid_at)}`, PAGE.mx + 8, tableEnd + 72, { lineBreak: false });
-  }
-  y = totals(doc, y + 14, [
+  // Keep the totals (and the PAID stamp beside them) together on one page.
+  y = ensure(doc, y + 14, fee.status === "paid" ? 96 : 56);
+  const totalsTop = y;
+  y = totals(doc, y, [
     { name: "Subtotal", value: money(fee.total, fee.currency) },
     { name: fee.status === "paid" ? "Total paid" : "Total due", value: money(fee.total, fee.currency), strong: true },
   ]);
-
-  if (fee.status === "paid") y = Math.max(y, tableEnd + 96);
-
+  if (fee.status === "paid") {
+    stamp(doc, "PAID", PAGE.mx + 8, totalsTop + 4);
+    doc.font("Helvetica").fontSize(8.6).fillColor(C.muted);
+    doc.text(`Payment received ${fmtDay(fee.received_on || fee.paid_at)}`, PAGE.mx + 8, totalsTop + 56, { lineBreak: false });
+    y = Math.max(y, totalsTop + 72);
+  }
   const d = fee.details || {};
   if (d.insured_value || d.coverage || d.policy_reference) {
     y = ensure(doc, y + 18, 90);
@@ -131,7 +131,11 @@ export async function buildFeeInvoice(s, fee) {
       ["Insured value", d.insured_value ? money(d.insured_value, fee.currency) : "-"],
       ["Policy reference", d.policy_reference],
     ]);
-    if (d.coverage) y = field(doc, "Coverage", d.coverage, PAGE.mx, y, CONTENT_W);
+    if (d.coverage) {
+      y = ensure(doc, y, 40);
+      label(doc, "Coverage", PAGE.mx, y, CONTENT_W);
+      y = paragraph(doc, d.coverage, y + 12, { size: 9.8, color: C.ink });
+    }
   }
 
   y = ensure(doc, y + 12, 110);

@@ -206,6 +206,43 @@ export function header(doc, { title, number, issued }) {
   return 128;
 }
 
+/**
+ * Word-wraps text to a width using the current font, honouring line breaks and splitting words that are
+ * longer than the line. Used to flow long text across pages instead of letting it run off the page.
+ */
+export function wrapLines(doc, text, width) {
+  const lines = [];
+  for (const paragraph of String(text).split(/\r?\n/)) {
+    if (paragraph.trim() === "") {
+      lines.push("");
+      continue;
+    }
+    let line = "";
+    for (const word of paragraph.split(/\s+/).filter(Boolean)) {
+      let rest = word;
+      while (doc.widthOfString(rest) > width) {
+        // Break an over-long word (for example a reference with no spaces) at the last character that fits.
+        let n = rest.length;
+        while (n > 1 && doc.widthOfString(rest.slice(0, n)) > width) n -= 1;
+        if (line) {
+          lines.push(line);
+          line = "";
+        }
+        lines.push(rest.slice(0, n));
+        rest = rest.slice(n);
+      }
+      const candidate = line ? `${line} ${rest}` : rest;
+      if (doc.widthOfString(candidate) <= width) line = candidate;
+      else {
+        lines.push(line);
+        line = rest;
+      }
+    }
+    lines.push(line);
+  }
+  return lines;
+}
+
 export function ensure(doc, y, needed) {
   if (y + needed > PAGE.h - PAGE.bottom) {
     doc.addPage();
@@ -294,25 +331,53 @@ export function table(doc, y, cols, rows, { fontSize = 9.2, pad = 5.5 } = {}) {
   };
 
   y = drawHead(y);
+  const bottom = PAGE.h - PAGE.bottom;
+  const pageRoom = bottom - PAGE.top - 22; // room for rows on a fresh page, below the repeated header
+
   rows.forEach((row, idx) => {
     doc.font("Helvetica").fontSize(fontSize);
     const heights = cols.map((c) => doc.heightOfString(txt(row[c.key]), { width: c.width - 16 }));
     const h = Math.max(...heights) + pad * 2;
-    if (y + h > PAGE.h - PAGE.bottom) {
-      doc.addPage();
-      y = drawHead(PAGE.top);
+
+    const drawCells = (top, rowH, cells) => {
+      if (idx % 2 === 1) doc.rect(PAGE.mx, top, CONTENT_W, rowH).fill(C.tint);
+      let x = PAGE.mx;
+      cols.forEach((c) => {
+        doc.font(row._bold ? "Helvetica-Bold" : "Helvetica").fontSize(fontSize).fillColor(C.ink);
+        doc.text(cells[c.key], x + 8, top + pad, { width: c.width - 16, align: c.align || "left" });
+        x += c.width;
+      });
+      doc.moveTo(PAGE.mx, top + rowH).lineTo(PAGE.w - PAGE.mx, top + rowH).lineWidth(0.4).strokeColor(C.line).stroke();
+      return top + rowH;
+    };
+
+    if (h <= pageRoom) {
+      if (y + h > bottom) {
+        doc.addPage();
+        y = drawHead(PAGE.top);
+      }
+      y = drawCells(y, h, Object.fromEntries(cols.map((c) => [c.key, txt(row[c.key])])));
+      return;
     }
-    if (idx % 2 === 1) doc.rect(PAGE.mx, y, CONTENT_W, h).fill(C.tint);
-    let x = PAGE.mx;
-    cols.forEach((c) => {
-      doc.font(row._bold ? "Helvetica-Bold" : "Helvetica").fontSize(fontSize).fillColor(C.ink);
-      doc.text(txt(row[c.key]), x + 8, y + pad, { width: c.width - 16, align: c.align || "left" });
-      x += c.width;
-    });
-    y += h;
-    doc.moveTo(PAGE.mx, y).lineTo(PAGE.w - PAGE.mx, y).lineWidth(0.4).strokeColor(C.line).stroke();
-  });
-  return y;
+
+    // The row is taller than a whole page (very long description): continue it over as many pages as needed.
+    const lineH = doc.currentLineHeight(true);
+    const wrapped = cols.map((c) => wrapLines(doc, txt(row[c.key]), c.width - 16));
+    const total = Math.max(...wrapped.map((l) => l.length));
+    let from = 0;
+    while (from < total) {
+      let room = bottom - y - pad * 2;
+      if (room < lineH * 3) {
+        doc.addPage();
+        y = drawHead(PAGE.top);
+        room = bottom - y - pad * 2;
+      }
+      const count = Math.max(1, Math.floor(room / lineH));
+      const cells = Object.fromEntries(cols.map((c, i) => [c.key, wrapped[i].slice(from, from + count).join("\n")]));
+      y = drawCells(y, Math.min(count, total - from) * lineH + pad * 2, cells);
+      from += count;
+    }
+  });  return y;
 }
 
 /** Label/value pairs aligned to the right, e.g. totals. */
@@ -341,6 +406,17 @@ export function totals(doc, y, lines, { width = 280 } = {}) {
 export function paragraph(doc, text, y, { size = 9.4, color = C.text, width = CONTENT_W, x = PAGE.mx, gap = 8 } = {}) {
   doc.font("Helvetica").fontSize(size).fillColor(color);
   const h = doc.heightOfString(text, { width, lineGap: 2.2 });
+  if (y + h + gap > PAGE.h - PAGE.bottom && h > 120) {
+    // Does not fit in the space left and is long: flow it line by line, from here, so nothing is cut off
+    // and a heading above it is never stranded on its own.
+    const lineH = doc.currentLineHeight(true) + 2.2;
+    for (const line of wrapLines(doc, text, width)) {
+      y = ensure(doc, y, lineH);
+      doc.font("Helvetica").fontSize(size).fillColor(color).text(line, x, y, { width, lineBreak: false });
+      y += lineH;
+    }
+    return y + gap;
+  }
   y = ensure(doc, y, h + gap);
   doc.text(text, x, y, { width, lineGap: 2.2 });
   return y + h + gap;

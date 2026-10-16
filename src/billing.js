@@ -1,4 +1,4 @@
-﻿import express from "express";
+import express from "express";
 import db from "./db.js";
 import { authenticateToken } from "./adminAuth.js";
 import { isEmail } from "./validation.js";
@@ -104,7 +104,7 @@ function validateFee(body = {}) {
     fields.items = "A fee can have at most 20 line items.";
   } else {
     body.items.forEach((row, i) => {
-      const description = text(row?.description, 200);
+      const description = text(row?.description, 2000);
       const raw = typeof row?.amount === "string" ? row.amount.trim() : row?.amount;
       const amount = Number(raw);
       if (!description) fields[`items.${i}.description`] = "Enter a description.";
@@ -136,12 +136,12 @@ function validateFee(body = {}) {
     if (!Number.isFinite(v) || v < 0 || v > 1e11) fields["details.insured_value"] = "Enter a valid amount.";
     else details.insured_value = v.toFixed(2);
   }
-  const coverage = text(d.coverage, 300);
+  const coverage = text(d.coverage, 2000);
   if (coverage) details.coverage = coverage;
   const policy = text(d.policy_reference, 60);
   if (policy) details.policy_reference = policy;
 
-  const instructions = text(body.payment_instructions, 1000);
+  const instructions = text(body.payment_instructions, 3000);
 
   if (Object.keys(fields).length) return { fields };
   return {
@@ -162,7 +162,7 @@ const badRequest = (res, fields) =>
 
 function validateCompose(body) {
   const subject = text(body?.subject, 200);
-  const message = text(body?.message, 5000);
+  const message = text(body?.message, 20000);
   if (!subject) return { error: "Enter an email subject." };
   if (!message) return { error: "Write the email message." };
   return { subject, message };
