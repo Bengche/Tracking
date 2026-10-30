@@ -108,7 +108,7 @@ const pdfAttachment = (filename, content) => ({
 });
 
 /** Builds the requested shipment documents; returns { attachments, names } for those that exist. */
-async function buildDocuments(shipment, types) {
+async function buildDocuments(shipment, types, { strict = false } = {}) {
   const attachments = [];
   const names = [];
   const available = documentsFor(shipment);
@@ -120,6 +120,7 @@ async function buildDocuments(shipment, types) {
       names.push(doc.name.toLowerCase());
     } catch (err) {
       console.error(`[documents] could not build ${type}:`, err.message);
+      if (strict) throw new Error(`The ${doc.name.toLowerCase()} could not be generated: ${err.message}`);
     }
   }
   return { attachments, names };
@@ -129,19 +130,19 @@ const listNames = (names) =>
   names.length <= 1 ? names[0] || "" : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
 
 async function deliver(messages) {
-  if (!emailEnabled() || messages.length === 0) return { sent: 0, failed: 0 };
-  const results = await Promise.allSettled(messages.map((m) => sendOne(m)));
+  if (!emailEnabled() || messages.length === 0) return { sent: 0, failed: 0, results: [] };
+  const settled = await Promise.allSettled(messages.map((m) => sendOne(m)));
   let failed = 0;
-  results.forEach((r, i) => {
-    if (r.status === "rejected") {
-      failed += 1;
-      const detail = r.reason?.response?.body?.errors
-        ? JSON.stringify(r.reason.response.body.errors)
-        : r.reason?.message;
-      console.error(`[email] failed to send to ${messages[i].to}:`, detail);
-    }
+  const results = settled.map((r, i) => {
+    if (r.status === "fulfilled") return { to: messages[i].to, ok: true };
+    failed += 1;
+    const detail = r.reason?.response?.body?.errors
+      ? r.reason.response.body.errors.map((e) => e.message).join("; ")
+      : r.reason?.message;
+    console.error(`[email] failed to send to ${messages[i].to}:`, detail);
+    return { to: messages[i].to, ok: false, error: detail || "Unknown error" };
   });
-  return { sent: messages.length - failed, failed };
+  return { sent: messages.length - failed, failed, results };
 }
 
 const route = (s) => `${place(s.origin_location, s.origin_country)} to ${place(s.destination_location, s.destination_country)}`;
@@ -158,14 +159,16 @@ function shipmentRows(s) {
 }
 
 /** Registration emails with the waybill (and commercial invoice, when applicable) attached. */
-export async function notifyShipmentCreated(shipment, { resend = false } = {}) {
-  if (!emailEnabled()) return { sent: 0, failed: 0 };
+export async function notifyShipmentCreated(shipment, { resend = false, to = ["sender", "receiver"] } = {}) {
+  if (!emailEnabled()) return { sent: 0, failed: 0, results: [] };
   const url = trackingUrl(shipment);
-  const { attachments, names } = await buildDocuments(shipment, ["waybill", "invoice", "packing_list", "customs"]);
+  // A resend must carry every document or fail loudly; the first send is best effort.
+  const types = resend ? documentsFor(shipment) : ["waybill", "invoice", "packing_list", "customs"];
+  const { attachments, names } = await buildDocuments(shipment, types, { strict: resend });
   const attached = names.length ? `Attached: ${listNames(names)}.` : "";
   const messages = [];
 
-  if (shipment.sender_email) {
+  if (to.includes("sender") && shipment.sender_email) {
     messages.push({
       to: shipment.sender_email,
       from: FROM,
@@ -183,7 +186,7 @@ export async function notifyShipmentCreated(shipment, { resend = false } = {}) {
     });
   }
 
-  if (shipment.receiver_email) {
+  if (to.includes("receiver") && shipment.receiver_email) {
     messages.push({
       to: shipment.receiver_email,
       from: FROM,

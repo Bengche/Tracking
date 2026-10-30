@@ -469,11 +469,35 @@ router.post("/:shipment_id/resend", async (req, res) => {
   if (!emailEnabled()) {
     return res.status(503).json({ error: "Email delivery is not configured on this server." });
   }
-  const result = await notifyShipmentCreated(shipment, { resend: true });
-  if (result.sent === 0) {
-    return res.status(502).json({ error: "The email provider rejected the message. Check the server logs." });
+
+  const target = req.body?.to ?? "both";
+  const recipients = { sender: ["sender"], receiver: ["receiver"], both: ["sender", "receiver"] }[target];
+  if (!recipients) return res.status(400).json({ error: "Choose the sender, the receiver or both." });
+  const missing = recipients.filter((r) => !shipment[`${r}_email`]);
+  if (missing.length) {
+    return res.status(400).json({ error: `This shipment has no ${missing.join(" or ")} email address.` });
   }
-  res.json({ success: true, message: "Confirmation email sent to the sender and the receiver." });
+
+  let result;
+  try {
+    result = await notifyShipmentCreated(shipment, { resend: true, to: recipients });
+  } catch (err) {
+    console.error("[email] resend failed:", err.message);
+    return res.status(502).json({ error: `The email was not sent. ${err.message}` });
+  }
+  if (result.failed > 0) {
+    const detail = result.results
+      .filter((r) => !r.ok)
+      .map((r) => `${r.to}: ${r.error}`)
+      .join(" | ");
+    return res.status(502).json({
+      error: `${result.sent ? "Only part of the emails were sent. " : "The email provider rejected the message. "}${detail}`,
+      sent: result.sent,
+      failed: result.failed,
+    });
+  }
+  const who = target === "both" ? "the sender and the receiver" : `the ${target}`;
+  res.json({ success: true, sent: result.sent, message: `Confirmation email and documents sent to ${who}.` });
 });
 
 // ------------------------------------------------ recipient confirmation
