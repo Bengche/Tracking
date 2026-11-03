@@ -39,7 +39,8 @@ export const config = {
     phone: process.env.SUPPORT_PHONE || "+1 (315) 202-9671",
   },
   email: {
-    apiKey: process.env.SENDGRID_API_KEY,
+    postmarkToken: process.env.POSTMARK_SERVER_TOKEN,
+    messageStream: process.env.POSTMARK_MESSAGE_STREAM || "outbound",
     from: process.env.FROM_EMAIL || process.env.SUPPORT_EMAIL || "support@velizon.com",
     adminTo: process.env.ADMIN_EMAIL,
   },

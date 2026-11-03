@@ -1,4 +1,3 @@
-import sgMail from "@sendgrid/mail";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { config } from "./config.js";
@@ -7,15 +6,77 @@ import { SHIPMENT_DOCUMENTS } from "./documents.js";
 import { trackingUrl, money } from "./pdfKit.js";
 import { documentsFor } from "./shipmentModel.js";
 
-if (config.email.apiKey) sgMail.setApiKey(config.email.apiKey);
-
 // Development only: EMAIL_DEV_SINK=<folder> writes every outgoing email (and its PDFs) to disk instead of sending it.
 const devSink = process.env.NODE_ENV !== "production" ? process.env.EMAIL_DEV_SINK : undefined;
 
-export const emailEnabled = () => Boolean(config.email.apiKey) || Boolean(devSink);
+export const emailEnabled = () => Boolean(config.email.postmarkToken) || Boolean(devSink);
+
+const quoteName = (name) => `"${String(name).replace(/[\r\n]+/g, " ").replace(/["\\]/g, "\\$&")}"`;
+
+/** Accepts "a@b.c", { email, name } or an array of either; returns an RFC 5322 address list. */
+function formatAddress(value) {
+  if (!value) return undefined;
+  if (Array.isArray(value)) return value.map(formatAddress).filter(Boolean).join(", ");
+  if (typeof value === "string") return value;
+  return value.name ? `${quoteName(value.name)} <${value.email}>` : value.email;
+}
+
+const decodeEntities = (s) =>
+  s
+    .replace(/&nbsp;/g, " ")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(Number(n)))
+    .replace(/&amp;/g, "&");
+
+// A plain-text alternative alongside the HTML improves inbox placement with strict providers.
+function htmlToText(html) {
+  return decodeEntities(
+    String(html)
+      .replace(/<(head|style|script)[\s\S]*?<\/\1>/gi, "")
+      .replace(/<a\s[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi, (_, href, label) => `${label.replace(/<[^>]+>/g, "").trim()} (${href})`)
+      .replace(/<br\s*\/?>/gi, "\n")
+      .replace(/<\/(p|div|h[1-6]|tr|table|li)>/gi, "\n")
+      .replace(/<\/t[dh]>/gi, "  ")
+      .replace(/<[^>]+>/g, ""),
+  )
+    .replace(/[ \t]+/g, " ")
+    .replace(/ *\n */g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+async function postmarkSend(message) {
+  const res = await fetch("https://api.postmarkapp.com/email", {
+    method: "POST",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+      "X-Postmark-Server-Token": config.email.postmarkToken,
+    },
+    body: JSON.stringify({
+      From: formatAddress(message.from),
+      To: formatAddress(message.to),
+      ReplyTo: formatAddress(message.replyTo),
+      Subject: message.subject,
+      HtmlBody: message.html,
+      TextBody: htmlToText(message.html),
+      MessageStream: config.email.messageStream,
+      Attachments: (message.attachments || []).map((a) => ({ Name: a.filename, Content: a.content, ContentType: a.type })),
+    }),
+    signal: AbortSignal.timeout(30_000),
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok || body.ErrorCode) {
+    throw new Error(body.Message ? `Postmark error ${body.ErrorCode}: ${body.Message}` : `Postmark responded with HTTP ${res.status}`);
+  }
+  return body;
+}
 
 async function sendOne(message) {
-  if (!devSink) return sgMail.send(message);
+  if (!devSink) return postmarkSend(message);
   await fs.mkdir(devSink, { recursive: true });
   const stamp = `${Date.now()}-${String(message.to).replace(/[^a-z0-9@.]/gi, "_")}`;
   await fs.writeFile(
@@ -136,9 +197,7 @@ async function deliver(messages) {
   const results = settled.map((r, i) => {
     if (r.status === "fulfilled") return { to: messages[i].to, ok: true };
     failed += 1;
-    const detail = r.reason?.response?.body?.errors
-      ? r.reason.response.body.errors.map((e) => e.message).join("; ")
-      : r.reason?.message;
+    const detail = r.reason?.message;
     console.error(`[email] failed to send to ${messages[i].to}:`, detail);
     return { to: messages[i].to, ok: false, error: detail || "Unknown error" };
   });
