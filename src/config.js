@@ -39,6 +39,14 @@ export const config = {
     phone: process.env.SUPPORT_PHONE || "+1 (315) 202-9671",
   },
   email: {
+    // "postmark" or "smtp"; when unset, Postmark is used if its token is set, otherwise SMTP.
+    provider: (process.env.EMAIL_PROVIDER || (process.env.POSTMARK_SERVER_TOKEN ? "postmark" : process.env.SMTP_HOST ? "smtp" : "")).toLowerCase(),
+    smtp: {
+      host: process.env.SMTP_HOST,
+      port: Number(process.env.SMTP_PORT) || 465,
+      user: process.env.SMTP_USER,
+      pass: process.env.SMTP_PASS,
+    },
     postmarkToken: process.env.POSTMARK_SERVER_TOKEN,
     messageStream: process.env.POSTMARK_MESSAGE_STREAM || "outbound",
     from: process.env.FROM_EMAIL || process.env.SUPPORT_EMAIL || "support@velizon.com",

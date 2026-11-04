@@ -1,3 +1,4 @@
+import nodemailer from "nodemailer";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { config } from "./config.js";
@@ -9,7 +10,28 @@ import { documentsFor } from "./shipmentModel.js";
 // Development only: EMAIL_DEV_SINK=<folder> writes every outgoing email (and its PDFs) to disk instead of sending it.
 const devSink = process.env.NODE_ENV !== "production" ? process.env.EMAIL_DEV_SINK : undefined;
 
-export const emailEnabled = () => Boolean(config.email.postmarkToken) || Boolean(devSink);
+const { provider, smtp } = config.email;
+const smtpReady = provider === "smtp" && Boolean(smtp.host && smtp.user && smtp.pass);
+const postmarkReady = provider === "postmark" && Boolean(config.email.postmarkToken);
+
+const smtpTransport = smtpReady
+  ? nodemailer.createTransport({
+      host: smtp.host,
+      port: smtp.port,
+      secure: smtp.port === 465,
+      auth: { user: smtp.user, pass: smtp.pass },
+      pool: true,
+      maxConnections: 3,
+      connectionTimeout: 20_000,
+      socketTimeout: 60_000,
+    })
+  : null;
+
+if (provider && !smtpReady && !postmarkReady) {
+  console.warn(`[email] EMAIL_PROVIDER is "${provider}" but its settings are incomplete; emails will not be sent.`);
+}
+
+export const emailEnabled = () => smtpReady || postmarkReady || Boolean(devSink);
 
 const quoteName = (name) => `"${String(name).replace(/[\r\n]+/g, " ").replace(/["\\]/g, "\\$&")}"`;
 
@@ -75,8 +97,25 @@ async function postmarkSend(message) {
   return body;
 }
 
+function smtpSend(message) {
+  return smtpTransport.sendMail({
+    from: formatAddress(message.from),
+    to: formatAddress(message.to),
+    replyTo: formatAddress(message.replyTo),
+    subject: message.subject,
+    html: message.html,
+    text: htmlToText(message.html),
+    attachments: (message.attachments || []).map((a) => ({
+      filename: a.filename,
+      content: a.content,
+      encoding: "base64",
+      contentType: a.type,
+    })),
+  });
+}
+
 async function sendOne(message) {
-  if (!devSink) return postmarkSend(message);
+  if (!devSink) return smtpReady ? smtpSend(message) : postmarkSend(message);
   await fs.mkdir(devSink, { recursive: true });
   const stamp = `${Date.now()}-${String(message.to).replace(/[^a-z0-9@.]/gi, "_")}`;
   await fs.writeFile(
